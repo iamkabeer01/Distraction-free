@@ -10,6 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: zip -r distraction-free-${{ github.ref_name }}.zip manifest.json background.js content.js shared.js popup.js popup.html popup.css icons
-      - run: gh release create "${{ github.ref_name }}" distraction-free-*.zip --generate-notes
+      - run: gh release create "${{ github.ref_name }}" distraction-free-*.zip --generate-notes || gh release upload "${{ github.ref_name }}" distraction-free-*.zip --clobber
         env:
           GITHUB_TOKEN: ${{ github.token }}
