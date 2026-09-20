@@ -107,11 +107,41 @@
   <!-- ─────────────── SETTINGS ─────────────── -->
   <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
 
+    <div class="field field-row">
+      <div class="field-text">
+        <label for="unblockEnabled">Allow unblocking</label>
+        <p class="help">Puts an <strong>Unblock</strong> button on blocked tabs. Switch it off and a block stands until you come back here.</p>
+      </div>
+      <input type="checkbox" role="switch" id="unblockEnabled" class="switch" checked>
+    </div>
+
+    <div class="card">
     <div class="field">
       <span class="field-title" id="providerLabel">Provider</span>
       <div class="segmented" role="radiogroup" aria-labelledby="providerLabel">
+        <button type="button" class="seg" role="radio" aria-checked="false" data-provider="ollama">Ollama Cloud</button>
         <button type="button" class="seg is-active" role="radio" aria-checked="true" data-provider="gemini">Google Gemini</button>
         <button type="button" class="seg" role="radio" aria-checked="false" data-provider="openrouter">OpenRouter</button>
+      </div>
+    </div>
+
+    <div data-for="ollama" hidden>
+      <div class="field">
+        <div class="field-head">
+          <label for="ollamaApiKey">Ollama Cloud API key</label>
+          <button type="button" class="link-btn" data-reveal="ollamaApiKey" aria-pressed="false">Show</button>
+        </div>
+        <input type="password" id="ollamaApiKey" placeholder="Your ollama.com key" autocomplete="off" spellcheck="false">
+        <p class="help">Stored locally in this browser profile. Never sent anywhere but ollama.com.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="ollamaModel">Ollama Cloud model</label>
+          <span class="counter" id="ollamaCount">1 model</span>
+        </div>
+        <select id="ollamaModel"></select>
+        <p class="help">This model routes every check. If it is busy or unavailable, the others you added answer instead, automatically.</p>
       </div>
     </div>
 
@@ -151,6 +181,8 @@
         <select id="openrouterModel"></select>
         <p class="help">This model routes every check. If it is busy or unavailable, the others you added answer instead, automatically. Ids ending in <code>:free</code> cost nothing.</p>
       </div>
+    </div>
+
     </div>
 
     <div class="field">

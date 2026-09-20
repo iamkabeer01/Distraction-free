@@ -89,7 +89,7 @@ let rowRefs = [];
 
 // Everything the monitor draws comes from this snapshot. It is refilled when storage
 // changes rather than polled, so the 1s tick only advances the live counters.
-let snap = { tracking: {}, tabs: [], closed: 0, minutes: DEFAULT_CHECK_MINUTES, hasKey: false };
+let snap = { tracking: {}, tabs: [], closed: 0, minutes: DEFAULT_CHECK_MINUTES, hasKey: false, canUnblock: true };
 
 $$('.chip').forEach((chip) =>
   chip.addEventListener('click', () => {
@@ -102,7 +102,7 @@ $$('.chip').forEach((chip) =>
 
 function bucketOf(entry) {
   if (entry.verdict === 'SKIP' || entry.verdict === 'UNSUPPORTED') return 'SKIP';
-  if (entry.verdict === 'ALLOW') return 'ALLOW';
+  if (entry.verdict === 'ALLOW' || entry.verdict === 'UNBLOCK') return 'ALLOW';
   if (entry.verdict === 'BLOCK') return 'BLOCK';
   if (entry.verdict === 'ERROR') return 'ERROR';
   return 'pending';
@@ -126,6 +126,11 @@ function statusOf(entry, remaining) {
       cls: 'pill-pending', glyph: 'lock', text: 'PRIVATE',
       title: 'On your never-check list. Nothing from this page was read or sent.',
     };
+  if (entry.verdict === 'UNBLOCK')
+    return {
+      cls: 'pill-pending', glyph: 'good', text: 'UNBLOCKED',
+      title: 'You unblocked this page. It is left alone for an hour, then judged again.',
+    };
   if (entry.verdict === 'ALLOW')
     return { cls: 'pill-good', glyph: 'good', text: 'FOCUSED', title: checkedWith };
   if (entry.verdict === 'BLOCK')
@@ -136,7 +141,7 @@ function statusOf(entry, remaining) {
       title: `Gave up after ${entry.attempts ?? MAX_ATTEMPTS} attempts: ${entry.error || 'unknown error'}`,
     };
   if (entry.checking)
-    return { cls: 'pill-pending', glyph: 'spinner', text: 'checking', title: 'Asking Gemini right now' };
+    return { cls: 'pill-pending', glyph: 'spinner', text: 'checking', title: 'Asking the model right now' };
   if (entry.attempts && entry.nextAttemptAt)
     return {
       cls: 'pill-warning', glyph: 'warning',
@@ -223,7 +228,29 @@ function buildRow(tab, entry, status, openSecs) {
 
   row.append(text, pill);
   li.appendChild(row);
+  if (entry.verdict === 'BLOCK' && snap.canUnblock) {
+    row.classList.add('has-action');
+    li.appendChild(unblockButton(tab));
+  }
   return { li, dur, pillText };
+}
+
+/* ── unblocking ─────────────────────────────────────────────────────────────
+   The popup only starts it. The worker switches to the tab, takes another look at
+   the page, and argues there if it has to - a page that was never rendered has no
+   text to judge, and this popup would close the moment the tab changed anyway.   */
+
+function unblockButton(tab) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'row-unblock';
+  btn.textContent = 'Unblock';
+  btn.title = 'Go to this page, check it once more, then unblock it';
+  btn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'startUnblock', tabId: tab.id });
+    window.close();
+  });
+  return btn;
 }
 
 function emptyState(message, hint) {
@@ -332,9 +359,10 @@ function paint() {
   visible.sort((a, b) => rank[a.bucket] - rank[b.bucket] || a.openSecs - b.openSecs);
 
   const statuses = visible.map((t) => statusOf(t.entry, t.remaining));
-  const signature = visible
-    .map((t, i) => `${t.tab.id}:${statuses[i].cls}:${statuses[i].title}:${t.tab.title}`)
-    .join('|');
+  const signature = [
+    snap.canUnblock, // flipping the switch adds or removes a button on every blocked row
+    ...visible.map((t, i) => `${t.tab.id}:${statuses[i].cls}:${statuses[i].title}:${t.tab.title}`),
+  ].join('|');
   const list = $('tabList');
 
   if (signature === lastSignature) {
@@ -373,8 +401,8 @@ function paint() {
 async function refresh() {
   const [stored, tabs] = await Promise.all([
     chrome.storage.local.get([
-      'tabTracking', 'distractedClosedCount', 'checkMinutes',
-      'provider', 'geminiApiKey', 'openrouterApiKey',
+      'tabTracking', 'distractedClosedCount', 'checkMinutes', 'unblockEnabled',
+      'provider', 'geminiApiKey', 'openrouterApiKey', 'ollamaApiKey',
     ]),
     chrome.tabs.query({}),
   ]);
@@ -383,10 +411,9 @@ async function refresh() {
     tabs,
     closed: stored.distractedClosedCount || 0,
     minutes: clampMinutes(stored.checkMinutes),
+    canUnblock: stored.unblockEnabled !== false, // absent means on
     // the alert is about the provider actually in use, not whichever key happens to exist
-    hasKey: normalizeProvider(stored.provider) === 'openrouter'
-      ? !!stored.openrouterApiKey
-      : !!stored.geminiApiKey,
+    hasKey: !!stored[`${normalizeProvider(stored.provider)}ApiKey`],
   };
   paint(); // paint's own signature check decides whether the list needs rebuilding
 }
@@ -436,65 +463,95 @@ recheckBtn.addEventListener('click', () => {
 
 const apiKeyInput = $('apiKey');
 const orKeyInput = $('openrouterApiKey');
-const orSelect = $('openrouterModel');
 const modelSelect = $('model');
 const customModel = $('customModel');
 const skipInput = $('skipHosts');
 const status = $('status');
+const unblockToggle = $('unblockEnabled');
 const promptInput = $('systemPrompt');
 
 promptInput.placeholder = DEFAULT_SYSTEM_PROMPT;
 
-/* ── openrouter models ──────────────────────────────────────────────────── */
+/* ── the list providers ─────────────────────────────────────────────────────
+   Ollama Cloud and OpenRouter work the same way, so they share one widget: the
+   dropdown IS the list, whatever is selected routes every request, and the rest
+   queue behind it as fallbacks. Both catalogues churn, so the last entry opens a
+   dialog rather than pretending the shipped list is closed.                    */
 
-// The dropdown is the list: whatever is selected routes every request and the rest queue
-// behind it as fallbacks. OpenRouter carries hundreds of ids and retires them often, so
-// the last entry opens a dialog rather than pretending this is a closed catalogue.
 const ADD_NEW = '__add__';
-const OR_LABELS = new Map(OPENROUTER_MODELS.map((m) => [m.id, m.label]));
-let orModels = [];
-let orChosen = '';
-
-function renderOrModels(selected) {
-  orSelect.textContent = '';
-  for (const id of orModels) orSelect.add(new Option(OR_LABELS.get(id) || id, id));
-  orSelect.add(new Option('Add another model…', ADD_NEW));
-  orChosen = orModels.includes(selected) ? selected : orModels[0] || '';
-  orSelect.value = orChosen || ADD_NEW;
-  $('orCount').textContent = `${orModels.length} model${orModels.length === 1 ? '' : 's'}`;
-}
+const LIST_PROVIDERS = {
+  ollama: {
+    select: $('ollamaModel'), count: $('ollamaCount'), keyInput: $('ollamaApiKey'),
+    known: OLLAMA_MODELS, fallback: DEFAULT_OLLAMA_MODELS,
+    keyName: 'ollamaApiKey', listName: 'ollamaModels',
+    catalogue: 'ollama.com/library', idPattern: '\\S+', // a plain model name, no vendor prefix
+  },
+  openrouter: {
+    select: $('openrouterModel'), count: $('orCount'), keyInput: orKeyInput,
+    known: OPENROUTER_MODELS, fallback: DEFAULT_OPENROUTER_MODELS,
+    keyName: 'openrouterApiKey', listName: 'openrouterModels',
+    catalogue: 'openrouter.ai/models', idPattern: '\\S+/\\S+', // always vendor/model
+  },
+};
 
 const modelDialog = $('modelDialog');
 const newModelId = $('newModelId');
+let addingFor = null; // which provider the dialog is adding to
 
-orSelect.addEventListener('change', () => {
-  if (orSelect.value !== ADD_NEW) {
-    orChosen = orSelect.value;
-    return;
-  }
-  newModelId.value = '';
-  newModelId.setCustomValidity('');
-  modelDialog.showModal();
-});
+for (const [name, p] of Object.entries(LIST_PROVIDERS)) {
+  p.labels = new Map(p.known.map((m) => [m.id, m.label]));
+  p.models = [];
+  p.chosen = '';
+  p.select.addEventListener('change', () => {
+    if (p.select.value !== ADD_NEW) {
+      p.chosen = p.select.value;
+      return;
+    }
+    addingFor = name;
+    $('modelDialogTitle').textContent = `Add an ${PROVIDERS[name]} model`;
+    $('newModelHelp').textContent =
+      `Copy the id from ${p.catalogue}. It becomes the model in use; the one you had drops to a fallback.`;
+    newModelId.pattern = p.idPattern;
+    newModelId.value = '';
+    newModelId.setCustomValidity('');
+    modelDialog.showModal();
+  });
+}
 
-// required and pattern cover empty and vendor/model natively; only "already in the list"
+function renderModels(name, selected) {
+  const p = LIST_PROVIDERS[name];
+  p.select.textContent = '';
+  for (const id of p.models) p.select.add(new Option(p.labels.get(id) || id, id));
+  p.select.add(new Option('Add another model…', ADD_NEW));
+  p.chosen = p.models.includes(selected) ? selected : p.models[0] || '';
+  p.select.value = p.chosen || ADD_NEW;
+  p.count.textContent = `${p.models.length} model${p.models.length === 1 ? '' : 's'}`;
+}
+
+// required and pattern cover empty and the id shape natively; only "already in the list"
 // needs saying, and setCustomValidity says it in the same browser bubble
 newModelId.addEventListener('input', () => {
   const id = newModelId.value.trim();
   if (id !== newModelId.value) newModelId.value = id; // a reassignment would jump the caret
-  newModelId.setCustomValidity(orModels.includes(id) ? 'That model is already in your list.' : '');
+  const taken = addingFor && LIST_PROVIDERS[addingFor].models.includes(id);
+  newModelId.setCustomValidity(taken ? 'That model is already in your list.' : '');
 });
 
 $('modelForm').addEventListener('submit', () => {
+  if (!addingFor) return;
+  const p = LIST_PROVIDERS[addingFor];
   const id = newModelId.value;
-  orModels = [id, ...orModels]; // you added it because you want to use it
-  renderOrModels(id);
+  p.models = [id, ...p.models]; // you added it because you want to use it
+  renderModels(addingFor, id);
   say(status, `${id} selected. Save settings to test it and switch over.`, '');
 });
 
 $('cancelModel').addEventListener('click', () => modelDialog.close());
 // cancel, Esc or a click outside: the dropdown must not stay parked on "Add another model…"
-modelDialog.addEventListener('close', () => renderOrModels(orChosen));
+modelDialog.addEventListener('close', () => {
+  if (addingFor) renderModels(addingFor, LIST_PROVIDERS[addingFor].chosen);
+  addingFor = null;
+});
 
 /* ── provider ───────────────────────────────────────────────────────────── */
 
@@ -512,7 +569,7 @@ function showProvider(next) {
 
 $$('.seg').forEach((b) => b.addEventListener('click', () => showProvider(b.dataset.provider)));
 
-const activeKeyInput = () => (provider === 'openrouter' ? orKeyInput : apiKeyInput);
+const activeKeyInput = () => (provider === 'gemini' ? apiKeyInput : LIST_PROVIDERS[provider].keyInput);
 
 /* ── gemini model list ──────────────────────────────────────────────────── */
 
@@ -561,15 +618,18 @@ skipInput.addEventListener('input', renderSkipCount);
 chrome.storage.local.get(
   [
     'provider', 'geminiApiKey', 'geminiModel', 'openrouterApiKey', 'openrouterModels',
-    'checkMinutes', 'systemPrompt', 'skipHosts',
+    'ollamaApiKey', 'ollamaModels', 'checkMinutes', 'systemPrompt', 'skipHosts', 'unblockEnabled',
   ],
   (stored) => {
     showProvider(stored.provider);
+    unblockToggle.checked = stored.unblockEnabled !== false;
     apiKeyInput.value = stored.geminiApiKey || '';
     showGeminiModel(stored.geminiModel || DEFAULT_MODEL);
-    orKeyInput.value = stored.openrouterApiKey || '';
-    orModels = parseModelList(stored.openrouterModels || DEFAULT_OPENROUTER_MODELS);
-    renderOrModels(orModels[0]);
+    for (const [name, p] of Object.entries(LIST_PROVIDERS)) {
+      p.keyInput.value = stored[p.keyName] || '';
+      p.models = parseModelList(stored[p.listName] || p.fallback);
+      renderModels(name, p.models[0]);
+    }
     savedMinutes = clampMinutes(stored.checkMinutes);
     quickMinutes.value = savedMinutes;
     promptInput.value = stored.systemPrompt || '';
@@ -640,17 +700,25 @@ async function testKeyAndModel(prov, model, apiKey, withThinkingConfig = true) {
   }
 }
 
+// saved on the spot rather than on Save settings: it costs nothing and takes effect at once,
+// and the storage write repaints the monitor through the same listener everything else uses
+unblockToggle.addEventListener('change', () => {
+  chrome.storage.local.set({ unblockEnabled: unblockToggle.checked });
+  say(status, unblockToggle.checked ? 'Unblocking is on.' : 'Unblocking is off. Blocks now stand.', '');
+});
+
 const saveBtn = $('save');
 
 saveBtn.addEventListener('click', async () => {
   const apiKey = activeKeyInput().value.trim();
   const skipHosts = skipInput.value.trim();
+  const picked = provider === 'gemini' ? null : LIST_PROVIDERS[provider].select.value;
   const model =
-    provider === 'openrouter'
-      ? orSelect.value === ADD_NEW
-        ? ''
-        : orSelect.value
-      : chosenGeminiModel() || DEFAULT_MODEL;
+    provider === 'gemini'
+      ? chosenGeminiModel() || DEFAULT_MODEL
+      : picked === ADD_NEW
+      ? ''
+      : picked;
 
   if (!apiKey) {
     say(status, `Enter your ${PROVIDERS[provider]} API key first.`, 'bad');
@@ -659,7 +727,7 @@ saveBtn.addEventListener('click', async () => {
   }
   if (!model) {
     say(status, 'Add at least one model id.', 'bad');
-    orSelect.focus();
+    LIST_PROVIDERS[provider].select.focus();
     return;
   }
 
@@ -671,14 +739,15 @@ saveBtn.addEventListener('click', async () => {
   if (result.ok || result.saveable) {
     // only the active provider's credentials are written, so switching back keeps the other's
     const settings = { provider, skipHosts };
-    if (provider === 'openrouter') {
-      settings.openrouterApiKey = apiKey;
-      // the worker reads the first id as primary and the rest as its fallback chain
-      settings.openrouterModels = modelOrder('openrouter', model, orModels.join('\n')).join('\n');
-    } else {
+    if (provider === 'gemini') {
       settings.geminiApiKey = apiKey;
       settings.geminiModel = model;
       showGeminiModel(model);
+    } else {
+      const p = LIST_PROVIDERS[provider];
+      settings[p.keyName] = apiKey;
+      // the worker reads the first id as primary and the rest as its fallback chain
+      settings[p.listName] = modelOrder(provider, model, p.models.join('\n')).join('\n');
     }
     await chrome.storage.local.set(settings);
     chrome.runtime.sendMessage({ type: 'rearmAll' });

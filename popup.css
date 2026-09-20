@@ -282,24 +282,35 @@ body {
 }
 .stepper-label { font-size: 12px; color: var(--ink-2); font-weight: 560; white-space: nowrap; }
 
+/* No border of its own: the quickbar is already a box, and a box inside a box reads as a
+   mistake. It earns one on hover and focus, which is when you need to see it is editable. */
 .stepper {
   display: flex; align-items: center;
-  border: 1px solid var(--line-strong);
+  border: 1px solid transparent;
   border-radius: var(--r-md);
-  background: var(--raised);
+  background: none;
   overflow: hidden;
+  transition: border-color .18s var(--ease), background .18s var(--ease);
 }
-.stepper input {
-  width: 58px;
-  padding: 4px 2px 4px 9px;
+.stepper:hover, .stepper:focus-within { border-color: var(--line-strong); background: var(--raised); }
+.stepper input[type="number"]:focus { box-shadow: none; } /* the wrapper shows the focus, not the field */
+.stepper input[type="number"] {
+  width: 42px;
+  padding: 4px 3px 4px 6px;
   border: 0;
   background: none;
   font: inherit;
   font-family: var(--mono);
   font-size: 12px;
+  text-align: right; /* the number sits next to its unit, not adrift from it */
   color: var(--ink);
+  appearance: textfield;
+  -moz-appearance: textfield;
 }
-.stepper-unit { padding: 0 9px 0 0; font-size: 11px; color: var(--ink-muted); }
+/* the spinner would crowd a field this narrow; arrow keys still step the value */
+.stepper input[type="number"]::-webkit-outer-spin-button,
+.stepper input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-unit { padding: 0 9px 0 4px; font-size: 11px; color: var(--ink-muted); }
 
 /* ─────────────────────────── chips ─────────────────────────── */
 
@@ -419,6 +430,32 @@ body {
 [data-for] { display: flex; flex-direction: column; gap: 12px; }
 .field-grow { flex: 1; min-height: 0; }
 .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.field-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.field-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+/* A real checkbox underneath, so it keeps the keyboard, the label click and the
+   screen-reader wiring; role="switch" is what makes it announce as one. */
+.switch {
+  appearance: none; -webkit-appearance: none;
+  position: relative; flex: none;
+  width: 36px; height: 20px; margin: 0; padding: 0;
+  border: 0; border-radius: var(--r-pill);
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background .18s var(--ease);
+}
+.switch::after {
+  content: '';
+  position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #fff; /* fixed: the knob has to read on both the off and on track */
+  box-shadow: var(--shadow-sm);
+  transition: transform .18s var(--ease);
+}
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+.switch:focus-visible { outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
 .field label, .field-title { font-size: 12px; font-weight: 600; color: var(--ink); }
 
 input[type="text"], input[type="password"], input[type="number"], select, textarea {
@@ -489,10 +526,21 @@ textarea.ta-sm { min-height: 64px; flex: none; font-size: 11.5px; }
   -webkit-mask-image: linear-gradient(180deg, #000 60%, transparent);
 }
 
-/* provider switch: two mutually exclusive choices, so a segmented control not a dropdown */
+/* one settings segment, drawn as a card: the shape lock puts panels and cards at 12px */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/* provider switch: mutually exclusive choices, so a segmented control not a dropdown */
 .segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--line-strong);
@@ -500,13 +548,14 @@ textarea.ta-sm { min-height: 64px; flex: none; font-size: 11.5px; }
   background: var(--surface);
 }
 .seg {
-  padding: 7px 8px;
+  padding: 7px 5px;
   border: 0;
   border-radius: var(--r-sm);
   background: none;
-  font: inherit; font-size: 12px; font-weight: 600;
+  font: inherit; font-size: 11.5px; font-weight: 600;
   color: var(--ink-2);
   cursor: pointer;
+  white-space: nowrap;
   transition: background .18s var(--ease), color .18s var(--ease);
 }
 .seg:hover:not(.is-active) { background: var(--accent-tint); color: var(--accent-ink); }
@@ -557,6 +606,24 @@ textarea.ta-sm { min-height: 64px; flex: none; font-size: 11.5px; }
 .status.ok { color: var(--good); }
 .status.warn { color: var(--warning); }
 .status.bad { color: var(--critical); }
+
+/* The unblock action rides on top of the row, because the row is itself one big
+   button and a button cannot hold another one. */
+.tablist li { position: relative; }
+.row.has-action { padding-right: 84px; }
+.row-unblock {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  padding: 4px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--raised);
+  font: inherit; font-size: 10.5px; font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background .16s var(--ease), border-color .16s var(--ease), color .16s var(--ease);
+}
+.row-unblock:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-tint); }
+.row-unblock:disabled { opacity: .6; cursor: progress; }
 
 /* the add-a-model dialog: a panel by the shape lock, centred by the browser */
 dialog {

@@ -7,10 +7,12 @@ const {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
+  OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
 } = new Function(`${src}; return {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
+  OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
 };`)();
 
 // a page must not be able to close the fence and have its own text read as instructions
@@ -54,8 +56,16 @@ assert.ok(!isRestrictedUrl(''));
 /* ── providers ── */
 
 assert.strictEqual(normalizeProvider('openrouter'), 'openrouter');
+assert.strictEqual(normalizeProvider('ollama'), 'ollama');
 assert.strictEqual(normalizeProvider(undefined), 'gemini', 'anything unknown falls back to gemini');
 assert.strictEqual(normalizeProvider('nonsense'), 'gemini');
+// a lookup on the prototype chain must not pass for a provider
+assert.strictEqual(normalizeProvider('constructor'), 'gemini');
+assert.deepStrictEqual(
+  Object.keys(PROVIDERS),
+  ['ollama', 'gemini', 'openrouter'],
+  'the settings screen offers them in this order'
+);
 
 // gemini: the chosen model first, every other known one as fallback, none repeated
 const gOrder = modelOrder('gemini', 'gemini-2.5-pro');
@@ -96,6 +106,30 @@ assert.deepStrictEqual(modelOrder('openrouter', 'vendor/new:free', DEFAULT_OPENR
   'vendor/new:free',
   ...OPENROUTER_MODELS.map((m) => m.id),
 ]);
+
+/* ── ollama cloud ── */
+
+// it runs the model for you, so an id is a bare name - a vendor/model id is OpenRouter's shape
+assert.ok(OLLAMA_MODELS.every((m) => !m.id.includes('/')));
+assert.strictEqual(parseModelList(DEFAULT_OLLAMA_MODELS)[0], 'nemotron-3-super', 'the shipped default');
+assert.deepStrictEqual(
+  modelOrder('ollama', 'qwen3-coder', 'qwen3-coder\nnemotron-3-super'),
+  ['qwen3-coder', 'nemotron-3-super'],
+  'the chosen model leads and the rest are its fallbacks, same as OpenRouter'
+);
+
+// it speaks the OpenAI chat shape, so only the endpoint and the headers differ
+const oll = buildRequest('ollama', { ...{ model: 'nemotron-3-super', apiKey: 'secret', systemPrompt: 'SYS', userText: 'USER' } });
+assert.strictEqual(oll.url, 'https://ollama.com/v1/chat/completions');
+assert.strictEqual(oll.headers.Authorization, 'Bearer secret');
+assert.strictEqual(oll.headers['X-Title'], undefined, 'that header is an OpenRouter courtesy, not a standard');
+assert.deepStrictEqual(oll.body.messages, [
+  { role: 'system', content: 'SYS' },
+  { role: 'user', content: 'USER' },
+]);
+assert.ok(!oll.url.includes('secret'));
+assert.strictEqual(readVerdict('ollama', { choices: [{ message: { content: 'ALLOW' } }] }), 'ALLOW');
+assert.strictEqual(readVerdict('ollama', {}), null);
 
 // the two wire formats are genuinely different, and neither leaks the key into the URL
 const common = { model: 'm/x:free', apiKey: 'secret', systemPrompt: 'SYS', userText: 'USER' };
@@ -138,5 +172,34 @@ assert.strictEqual(
 assert.strictEqual(readVerdict('openrouter', { choices: [{ message: { content: 'hmm' } }] }), null);
 assert.strictEqual(readVerdict('openrouter', {}), null);
 assert.strictEqual(readVerdict('gemini', {}), null);
+
+/* ── popup wiring ──
+   shared.js is pure and testable; popup.js is not, so these two cheap checks stand in for
+   the class of breakage that still parses cleanly. A patch once cut the monitor's entire
+   render loop out of popup.js: node --check passed, every test passed, and the popup drew
+   nothing at all. */
+
+const popupJs = readFileSync(`${__dirname}/popup.js`, 'utf8');
+const popupHtml = readFileSync(`${__dirname}/popup.html`, 'utf8');
+
+// the load-bearing names: lose one and the popup renders nothing
+for (const needle of [
+  'function paint(',
+  'async function refresh(',
+  'function buildRow(',
+  'function unblockButton(',
+  'function emptyState(',
+  'chrome.storage.onChanged.addListener',
+  'setInterval(paint',
+]) {
+  assert.ok(popupJs.includes(needle), `popup.js has lost: ${needle}`);
+}
+
+// every element the popup reaches for has to exist in the markup it runs against
+const htmlIds = new Set([...popupHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+// $ is by id, $$ is by selector - only the first kind names an element
+for (const m of popupJs.matchAll(/(^|[^$])\$\('([^']+)'\)/gm)) {
+  assert.ok(htmlIds.has(m[2]), `popup.js reads #${m[2]}, which popup.html does not define`);
+}
 
 console.log('all checks passed');

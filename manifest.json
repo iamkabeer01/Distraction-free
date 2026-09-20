@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Distraction Free",
   "version": "1.6.1",
-  "description": "Watches your open tabs and asks Gemini or OpenRouter, from the page's text alone, whether it is time-wasting content.",
+  "description": "Watches your open tabs and asks Ollama Cloud, Gemini or OpenRouter, from the page's text alone, whether it is time-wasting content.",
   "permissions": [
     "storage",
     "tabs",
