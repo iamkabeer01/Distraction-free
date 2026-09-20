@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Distraction Free",
+  "version": "1.2.0",
+  "description": "Tracks open tabs and uses Gemini to check whether the page is time-wasting content, blocking it if so.",
+  "permissions": ["storage", "tabs", "alarms", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Distraction Free"
+  },
+  "options_page": "popup.html"
+}

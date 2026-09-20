@@ -1,0 +1,5 @@
+{
+  "systemInstruction": {"parts": [{"text": "You are a strict focus guard. Reply with exactly one word: ALLOW or BLOCK."}]},
+  "contents": [{"role": "user", "parts": [{"text": "<page_signals>\nURL: https://youtube.com/watch?v=x\nVideo title: WHY THE HELL IS STRANGER THINGS 5 SO BAD\nChannel: some commentary channel\n</page_signals>"}]}],
+  "generationConfig": {"temperature": 0, "maxOutputTokens": 512, "thinkingConfig": {"thinkingBudget": 0}}
+}
