@@ -45,10 +45,10 @@ Tabs sitting in the **background are left alone** until you actually switch to t
 
 Works in **Chrome** and **Edge**. There's no Web Store listing — you load it yourself, which takes about as long as reading this sentence.
 
-1. **Download this folder** to somewhere permanent. Chrome loads the extension from this exact path, so don't run it out of `Downloads` and then clean up later — deleting the folder uninstalls it.
+1. **[Download the latest release](https://github.com/iamkabeer01/Distraction-free/releases/latest)** (`distraction-free-v*.zip`) and unzip it somewhere permanent. Chrome loads the extension from this exact path, so don't run it out of `Downloads` and then clean up later — deleting the folder uninstalls it.
 2. Open **`chrome://extensions`** (Edge: `edge://extensions`).
 3. Flip **Developer mode** on — top-right corner.
-4. Hit **Load unpacked** — top-left — and pick the folder you downloaded. Pick the folder *itself*, the one with `manifest.json` in it.
+4. Hit **Load unpacked** — top-left — and pick the folder you unzipped. Pick the folder *itself*, the one with `manifest.json` in it.
 5. That's it. Click the puzzle-piece icon in the toolbar and **pin** Distraction Free so it's one click away.
 
 
