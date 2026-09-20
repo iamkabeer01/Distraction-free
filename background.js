@@ -1,26 +1,23 @@
-importScripts('prompt.js'); // DEFAULT_SYSTEM_PROMPT
+importScripts('shared.js');
+// shared.js: DEFAULT_SYSTEM_PROMPT, DEFAULT_MODEL, DEFAULT_CHECK_MINUTES, MAX_ATTEMPTS,
+//            TRANSIENT_STATUS, geminiEndpoint, fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped
 
-const DEFAULT_CHECK_MINUTES = 2;
-const DEFAULT_MODEL = 'gemini-3.6-flash';
-
-const MAX_ATTEMPTS = 5;
 const RETRY_BACKOFF_MINUTES = [1, 2, 4, 8, 16]; // chrome.alarms will not fire faster than 1 minute
 const STALE_CHECK_MS = 90 * 1000; // a check still flagged running after this was killed with the service worker
+const REQUEST_TIMEOUT_MS = 15 * 1000; // two attempts must still fit inside the worker's idle budget
 
 const cache = new Map(); // cacheKey -> {verdict}, in-memory only, never caches errors
 
-function cacheKeyFor(url) {
-  const u = new URL(url);
-  if (u.hostname.endsWith('youtube.com')) return 'yt:' + (u.searchParams.get('v') || u.pathname + u.search);
-  return u.hostname + u.pathname;
-}
+// without this the worker silently swallows every failed await
+self.addEventListener('unhandledrejection', (e) => console.error('[DF] unhandled rejection', e.reason));
 
 async function getTracking() {
   const { tabTracking } = await chrome.storage.local.get('tabTracking');
   return tabTracking || {};
 }
 
-// ponytail: every tracking write is read-modify-write; serialize them or concurrent tab events clobber each other
+//  every tracking write is read-modify-write; serialize them or concurrent tab events clobber
+// each other. Claims and counters ride the same chain, which is what makes them atomic.
 let writeChain = Promise.resolve();
 function updateTracking(mutate) {
   writeChain = writeChain.then(async () => {
@@ -35,39 +32,67 @@ function updateTracking(mutate) {
   return writeChain;
 }
 
+// same chain, so two tabs closing at once cannot both read the old count and write count+1
+function serialize(fn) {
+  writeChain = writeChain.then(fn).catch((e) => console.error('[DF] serialized task failed', e));
+  return writeChain;
+}
+
 async function getCheckMinutes() {
   const { checkMinutes } = await chrome.storage.local.get('checkMinutes');
   return Number(checkMinutes) > 0 ? Number(checkMinutes) : DEFAULT_CHECK_MINUTES;
+}
+
+async function isSkipped(url) {
+  const { skipHosts } = await chrome.storage.local.get('skipHosts');
+  const hosts = parseSkipHosts(skipHosts);
+  if (!hosts.length) return false;
+  try {
+    return hostIsSkipped(new URL(url).hostname.toLowerCase(), hosts);
+  } catch {
+    return false;
+  }
 }
 
 async function scheduleTabAlarm(tabId) {
   chrome.alarms.create(`check_${tabId}`, { delayInMinutes: await getCheckMinutes() });
 }
 
-// single entry point for "this tab now shows a different page" - full navigation (onUpdated) or SPA nav (content script)
+// single entry point for "this tab now shows a different page" - full navigation or SPA nav
 async function handleNavigation(tabId, url, title) {
   if (!url || !url.startsWith('http')) return;
   const minutes = await getCheckMinutes();
+  // both mean "never ask the model": one because Chrome will not let us read the page,
+  // the other because the user asked us not to
+  const preVerdict = isRestrictedUrl(url) ? 'UNSUPPORTED' : (await isSkipped(url)) ? 'SKIP' : null;
   let changed = false;
+
   await updateTracking((tracking) => {
-    const entry = tracking[tabId];
-    changed = !entry || entry.url !== url;
+    const prev = tracking[tabId];
+    changed = !prev || prev.url !== url;
+    if (!changed) {
+      if (title) prev.title = title;
+      return;
+    }
     tracking[tabId] = {
-      openedAt: entry?.openedAt || Date.now(),
+      openedAt: prev?.openedAt || Date.now(),
       url,
-      title: title || entry?.title || '',
-      currentUrlSince: changed ? Date.now() : entry.currentUrlSince,
-      distracted: changed ? false : entry?.distracted || false,
-      verdict: changed ? null : entry?.verdict || null,
-      error: changed ? null : entry?.error || null,
-      hadScreenshot: changed ? false : entry?.hadScreenshot || false,
-      checkDue: changed ? false : entry?.checkDue || false,
-      attempts: changed ? 0 : entry?.attempts || 0,
-      checking: changed ? null : entry?.checking || null,
-      nextAttemptAt: changed ? Date.now() + minutes * 60000 : entry?.nextAttemptAt || null,
+      title: title || '',
+      currentUrlSince: Date.now(),
+      verdict: preVerdict,
+      distracted: false,
+      error: null,
+      model: null,
+      thin: false,
+      checkDue: false,
+      attempts: 0,
+      checking: null,
+      claim: null,
+      nextAttemptAt: preVerdict ? null : Date.now() + minutes * 60000,
     };
   });
-  if (changed) await scheduleTabAlarm(tabId); // restart the countdown for the new content
+
+  if (changed && !preVerdict) await scheduleTabAlarm(tabId); // restart the countdown for the new content
 }
 
 function sendMessageSafe(tabId, message, timeoutMs = 2000) {
@@ -102,81 +127,81 @@ async function checkTab(tabId) {
   }
   if (!tab.url || !tab.url.startsWith('http') || tab.discarded) return;
 
-  const entry = (await getTracking())[tabId];
-  if (!entry) return;
-  // ponytail: a page is judged exactly once - only an unfinished check is ever retried
-  if (entry.verdict) return;
-  if (entry.checking && Date.now() - entry.checking < STALE_CHECK_MS) return;
-
-  // a tab you are not looking at is not wasting your time, and its screen cannot be captured either
+  // A tab you are not looking at is not spending your attention, so it does not spend a call
+  // either - music left playing in a background tab included. Deferred, not skipped: it is
+  // checked when you switch to it, so a tab closed unseen is never paid for at all.
   if (!tab.active || tab.status !== 'complete') {
-    if (!entry.checkDue) {
-      await updateTracking((t) => {
-        if (t[tabId]) t[tabId].checkDue = true;
-      });
-    }
+    await updateTracking((t) => {
+      const entry = t[tabId];
+      if (entry && !entry.verdict && !entry.checkDue) entry.checkDue = true;
+    });
     return;
   }
 
+  // The claim is taken inside the serialized write, so of two callers racing here exactly one wins.
+  // The winner's result is written back only while it still holds the claim, which is what stops a
+  // slow verdict landing on a page the user navigated to in the meantime.
+  const claim = crypto.randomUUID();
+  let won = false;
   await updateTracking((t) => {
-    if (t[tabId]) {
-      t[tabId].checking = Date.now();
-      t[tabId].checkDue = false;
-    }
+    const entry = t[tabId];
+    if (!entry || entry.verdict) return; // a page is judged exactly once
+    if (entry.checking && Date.now() - entry.checking < STALE_CHECK_MS) return;
+    entry.checking = Date.now();
+    entry.claim = claim;
+    entry.checkDue = false;
+    won = true;
   });
+  if (!won) return;
 
   const cacheKey = cacheKeyFor(tab.url);
   const cached = cache.get(cacheKey);
   if (cached) {
-    await recordSuccess(tabId, cached, false);
+    await recordSuccess(tabId, cached, false, claim);
     return;
   }
 
-  const content = await extractFromTab(tabId);
-  if (!content) {
-    await recordFailure(tabId, 'Could not read page content');
-    return;
-  }
+  // Plenty of pages refuse injection (the web store, other extensions, sandboxed frames).
+  // URL and title are still enough to judge, so fall back to them instead of failing.
+  const content = (await extractFromTab(tabId)) || { title: tab.title || '', thin: true };
 
-  let screenshot = null;
-  try {
-    screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 50 });
-  } catch (e) {
-    console.warn('[DF] screenshot failed', e.message);
-  }
-
-  const result = await classify(content, tab.url, screenshot);
+  const result = await classify(content, tab.url);
   if (result.verdict === 'ERROR') {
-    await recordFailure(tabId, result.error);
+    await recordFailure(tabId, result.error, claim);
     return;
   }
   cache.set(cacheKey, result);
-  await recordSuccess(tabId, result, !!screenshot);
+  await recordSuccess(tabId, result, !!content.thin, claim);
 }
 
-async function recordSuccess(tabId, result, hadScreenshot) {
+async function recordSuccess(tabId, result, thin, claim) {
+  let blocked = false;
   await updateTracking((tracking) => {
     const entry = tracking[tabId];
-    if (!entry) return;
+    if (!entry || entry.claim !== claim) return; // the page moved on while we were asking
     entry.verdict = result.verdict;
     entry.error = null;
-    entry.hadScreenshot = hadScreenshot;
-    entry.checkedAt = Date.now();
+    entry.thin = thin;
+    entry.model = result.model || null;
     entry.checking = null;
+    entry.claim = null;
     entry.checkDue = false;
     entry.nextAttemptAt = null;
     entry.distracted = result.verdict === 'BLOCK';
+    blocked = entry.distracted;
   });
-  if (result.verdict === 'BLOCK') chrome.tabs.sendMessage(tabId, { type: 'showBlockOverlay' });
+  // a tab with no content script (pdf viewer, blocked injection) rejects here
+  if (blocked) chrome.tabs.sendMessage(tabId, { type: 'showBlockOverlay' }).catch(() => {});
 }
 
-async function recordFailure(tabId, error) {
+async function recordFailure(tabId, error, claim) {
   let retryInMinutes = null;
   await updateTracking((tracking) => {
     const entry = tracking[tabId];
-    if (!entry) return;
+    if (!entry || entry.claim !== claim) return;
     entry.attempts = (entry.attempts || 0) + 1;
     entry.checking = null;
+    entry.claim = null;
     entry.error = error;
     if (entry.attempts >= MAX_ATTEMPTS) {
       entry.verdict = 'ERROR'; // give up, stop retrying
@@ -204,26 +229,36 @@ async function watchdog() {
 }
 
 function buildPageBundle(content, tabUrl) {
-  const lines = [`URL: ${tabUrl}`, `Page title: ${content.title || ''}`];
+  const lines = [`URL: ${fenceSafe(tabUrl)}`, `Page title: ${fenceSafe(content.title)}`];
+  if (content.thin) {
+    lines.push('', 'This page refused to be read. Judge it from the URL and title above.');
+    return lines.join('\n');
+  }
   if (content.youtube) {
     lines.push(
-      `YouTube surface: ${content.youtube.surface}`,
-      `Search query: ${content.youtube.searchQuery || '(none)'}`,
-      `Video title: ${content.youtube.videoTitle || '(not a watch page)'}`,
-      `Channel: ${content.youtube.channel || ''}`,
-      `Video description: ${content.youtube.description || ''}`
+      `YouTube surface: ${fenceSafe(content.youtube.surface)}`,
+      `Search query: ${fenceSafe(content.youtube.searchQuery) || '(none)'}`,
+      `Video title: ${fenceSafe(content.youtube.videoTitle) || '(not a watch page)'}`,
+      `Channel: ${fenceSafe(content.youtube.channel)}`,
+      `Video description: ${fenceSafe(content.youtube.description)}`
     );
   }
   lines.push(
-    `H1: ${content.h1 || ''}`,
-    `og:title: ${content.ogTitle || ''}`,
-    `og:site_name: ${content.ogSiteName || ''}`,
-    `og:type: ${content.ogType || ''}`,
-    `meta description: ${content.description || ''}`,
-    `meta keywords: ${content.keywords || ''}`
+    `H1: ${fenceSafe(content.h1)}`,
+    `og:title: ${fenceSafe(content.ogTitle)}`,
+    `og:site_name: ${fenceSafe(content.ogSiteName)}`,
+    `og:type: ${fenceSafe(content.ogType)}`,
+    `meta description: ${fenceSafe(content.description)}`,
+    `meta keywords: ${fenceSafe(content.keywords)}`
   );
-  if (content.jsonLd?.length) lines.push(`Structured data: ${JSON.stringify(content.jsonLd).slice(0, 600)}`);
-  lines.push('', 'Visible page text (may include navigation and recommendations - judge only the main content):', content.mainText || '');
+  if (content.jsonLd?.length) {
+    lines.push(`Structured data: ${fenceSafe(JSON.stringify(content.jsonLd).slice(0, 600))}`);
+  }
+  lines.push(
+    '',
+    'Main page text, with navigation, sidebars, forms and footers already stripped out:',
+    fenceSafe(content.mainText) || '(the page exposed no readable text)'
+  );
   return lines.join('\n');
 }
 
@@ -232,74 +267,95 @@ async function getSystemPrompt() {
   return (systemPrompt || '').trim() || DEFAULT_SYSTEM_PROMPT;
 }
 
-async function callGemini(model, apiKey, parts, withThinkingConfig) {
-  const generationConfig = { temperature: 0, maxOutputTokens: 512 };
-  // ponytail: thinking models burn the whole token budget before emitting text - turn it off where supported
-  if (withThinkingConfig) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+// which provider is live, its key, and the candidate models in fallback order
+async function getProviderConfig() {
+  const stored = await chrome.storage.local.get([
+    'provider', 'geminiApiKey', 'geminiModel', 'openrouterApiKey', 'openrouterModels',
+  ]);
+  const provider = normalizeProvider(stored.provider);
 
-  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+  if (provider === 'openrouter') {
+    const list = stored.openrouterModels || DEFAULT_OPENROUTER_MODELS;
+    return { provider, apiKey: stored.openrouterApiKey || '', list, primary: parseModelList(list)[0] || '' };
+  }
+  return { provider, apiKey: stored.geminiApiKey || '', list: '', primary: stored.geminiModel || DEFAULT_MODEL };
+}
+
+async function callModel(provider, model, apiKey, userText, withThinkingConfig) {
+  const systemPrompt = await getSystemPrompt();
+  const { url, headers, body } = buildRequest(provider, {
+    model, apiKey, systemPrompt, userText, withThinkingConfig,
+  });
+  return fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: await getSystemPrompt() }] },
-      contents: [{ role: 'user', parts }],
-      generationConfig,
-    }),
+    headers,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), // a hung request would otherwise die with the worker
+    body: JSON.stringify(body),
   });
 }
 
-const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// the model that last answered; a busy model is not re-tried for every tab until settings change
+let sessionModel = null;
 
-async function classify(content, tabUrl, screenshotDataUrl) {
-  const { geminiApiKey, geminiModel } = await chrome.storage.local.get(['geminiApiKey', 'geminiModel']);
-  if (!geminiApiKey) return { verdict: 'ERROR', error: 'No API key saved' };
-
-  const model = geminiModel || DEFAULT_MODEL;
-  const parts = [{ text: `<page_signals>\n${buildPageBundle(content, tabUrl)}\n</page_signals>` }];
-  if (screenshotDataUrl) {
-    parts.push({ inline_data: { mime_type: 'image/jpeg', data: screenshotDataUrl.split(',')[1] } });
-  }
-
-  let useThinkingConfig = true;
+// -> { verdict } | { error, tryNextModel }
+async function askModel(provider, model, apiKey, userText) {
+  let withThinkingConfig = true;
   let lastError = 'unknown';
 
-  // ponytail: one quick in-process retry for a transient blip; anything worse goes to the durable alarm backoff,
-  // because long sleeps here just get the service worker killed mid-check
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await callGemini(model, geminiApiKey, parts, useThinkingConfig);
+      const res = await callModel(provider, model, apiKey, userText, withThinkingConfig);
 
       if (!res.ok) {
         const body = await res.text();
-        lastError = `HTTP ${res.status}: ${body.slice(0, 200)}`;
-        if (useThinkingConfig && /thinking/i.test(body)) {
-          useThinkingConfig = false; // model predates thinkingConfig
+        lastError = `HTTP ${res.status}: ${body.slice(0, 160)}`;
+        if (provider === 'gemini' && withThinkingConfig && /thinking/i.test(body)) {
+          withThinkingConfig = false; // model predates thinkingConfig, same model can still answer
           continue;
         }
-        if (TRANSIENT_STATUS.has(res.status)) {
-          await sleep(1000);
-          continue;
-        }
-        return { verdict: 'ERROR', error: lastError };
+        // busy, over quota, retired, or an id this provider does not carry
+        const modelsFault =
+          TRANSIENT_STATUS.has(res.status) || res.status === 404 || (res.status === 400 && /model/i.test(body));
+        return { error: lastError, tryNextModel: modelsFault };
       }
 
       const data = await res.json();
-      const text = (data?.candidates?.[0]?.content?.parts || [])
-        .map((p) => p.text || '')
-        .join('')
-        .trim()
-        .toUpperCase();
-
-      if (text.includes('BLOCK')) return { verdict: 'BLOCK' };
-      if (text.includes('ALLOW')) return { verdict: 'ALLOW' };
-      lastError = `Empty reply (${data?.candidates?.[0]?.finishReason || 'no candidates'})`;
+      const verdict = readVerdict(provider, data);
+      if (verdict) return { verdict };
+      lastError = `Empty reply (${finishReasonOf(provider, data)})`;
     } catch (e) {
-      lastError = e.message;
+      if (e.name === 'TimeoutError') {
+        return { error: `${model} did not answer in ${REQUEST_TIMEOUT_MS / 1000}s`, tryNextModel: true };
+      }
+      return { error: e.message, tryNextModel: false }; // offline, DNS, aborted - no model helps
     }
   }
+  return { error: lastError, tryNextModel: true };
+}
 
-  return { verdict: 'ERROR', error: lastError };
+async function classify(content, tabUrl) {
+  const { provider, apiKey, primary, list } = await getProviderConfig();
+  if (!apiKey) return { verdict: 'ERROR', error: `No ${PROVIDERS[provider]} API key saved` };
+
+  const userText = `<page_signals>\n${buildPageBundle(content, tabUrl)}\n</page_signals>`;
+  const candidates = modelOrder(provider, sessionModel || primary, list);
+  if (!candidates.length) return { verdict: 'ERROR', error: 'No model configured' };
+
+  let lastError = 'unknown';
+  for (const model of candidates) {
+    const result = await askModel(provider, model, apiKey, userText);
+    if (result.verdict) {
+      if (sessionModel !== model) console.info('[DF] answering with', model);
+      sessionModel = model; // stay on whatever is actually up
+      return { verdict: result.verdict, model };
+    }
+    lastError = `${model}: ${result.error}`;
+    if (!result.tryNextModel) return { verdict: 'ERROR', error: lastError };
+    console.warn('[DF]', lastError, '- trying the next model');
+  }
+
+  sessionModel = null; // everything was down; start again from the chosen model next time
+  return { verdict: 'ERROR', error: `All models failed. Last: ${lastError}` };
 }
 
 async function seedExistingTabs() {
@@ -331,33 +387,47 @@ function scheduleDailyReset() {
 }
 
 async function dailyReset() {
-  // geminiApiKey / geminiModel / checkMinutes are intentionally left untouched
+  // provider keys, models, checkMinutes, systemPrompt and skipHosts are intentionally left untouched
   await chrome.storage.local.set({ tabTracking: {}, distractedClosedCount: 0 });
   await seedExistingTabs(); // tabs still open need their tracking back
 }
 
 async function rearmAll() {
   cache.clear(); // verdicts were produced by the previous prompt/model
+  sessionModel = null; // honour the model the user just picked
   for (const alarm of await chrome.alarms.getAll()) {
     if (alarm.name.startsWith('check_')) chrome.alarms.clear(alarm.name);
   }
   const minutes = await getCheckMinutes();
   const tabs = await chrome.tabs.query({});
+  const unreadable = new Map(); // tabId -> pre-verdict that means "never ask the model"
+  for (const tab of tabs) {
+    if (!tab.url?.startsWith('http')) continue;
+    if (isRestrictedUrl(tab.url)) unreadable.set(tab.id, 'UNSUPPORTED');
+    else if (await isSkipped(tab.url)) unreadable.set(tab.id, 'SKIP');
+  }
+
   await updateTracking((tracking) => {
     for (const tab of tabs) {
       const entry = tracking[tab.id];
       if (!entry) continue;
+      const pre = unreadable.get(tab.id) || null;
       entry.currentUrlSince = Date.now();
-      entry.verdict = null;
+      entry.verdict = pre;
       entry.error = null;
       entry.checkDue = false;
       entry.attempts = 0;
       entry.checking = null;
-      entry.nextAttemptAt = Date.now() + minutes * 60000;
+      entry.claim = null; // orphans any check still in flight under the old settings
+      entry.distracted = false;
+      entry.nextAttemptAt = pre ? null : Date.now() + minutes * 60000;
     }
   });
+
   for (const tab of tabs) {
-    if (tab.url?.startsWith('http')) chrome.alarms.create(`check_${tab.id}`, { delayInMinutes: minutes });
+    if (tab.url?.startsWith('http') && !unreadable.has(tab.id)) {
+      chrome.alarms.create(`check_${tab.id}`, { delayInMinutes: minutes });
+    }
   }
 }
 
@@ -379,20 +449,31 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
+// SPA navigation, handled by the browser instead of a polling timer inside every open page
+function handleSpaNavigation({ tabId, frameId, url }) {
+  if (frameId !== 0) return;
+  handleNavigation(tabId, url);
+  // a verdict for the previous page must not keep blocking this one
+  chrome.tabs.sendMessage(tabId, { type: 'pageChanged' }).catch(() => {});
+}
+chrome.webNavigation.onHistoryStateUpdated.addListener(handleSpaNavigation);
+chrome.webNavigation.onReferenceFragmentUpdated.addListener(handleSpaNavigation);
+
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   const tracking = await getTracking();
   if (tracking[tabId]?.checkDue) checkTab(tabId);
 });
 
-chrome.tabs.onRemoved.addListener(async (tabId) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.alarms.clear(`check_${tabId}`);
-  const tracking = await getTracking();
-  if (tracking[tabId]?.distracted) {
-    const { distractedClosedCount } = await chrome.storage.local.get('distractedClosedCount');
-    await chrome.storage.local.set({ distractedClosedCount: (distractedClosedCount || 0) + 1 });
-  }
-  await updateTracking((t) => {
-    delete t[tabId];
+  serialize(async () => {
+    const tracking = await getTracking();
+    if (tracking[tabId]?.distracted) {
+      const { distractedClosedCount } = await chrome.storage.local.get('distractedClosedCount');
+      await chrome.storage.local.set({ distractedClosedCount: (distractedClosedCount || 0) + 1 });
+    }
+    delete tracking[tabId];
+    await chrome.storage.local.set({ tabTracking: tracking });
   });
 });
 
@@ -410,7 +491,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender) => {
-  if (message.type === 'navigated' && sender.tab) handleNavigation(sender.tab.id, message.url, sender.tab.title);
   if (message.type === 'closeTab' && sender.tab) chrome.tabs.remove(sender.tab.id);
   if (message.type === 'rearmAll') rearmAll();
 });

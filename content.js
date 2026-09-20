@@ -4,13 +4,12 @@
 
   const OVERLAY_ID = '__df_block_overlay__';
   let repauseTimer = null;
-  let urlTimer = null;
 
   function send(message) {
     try {
       chrome.runtime.sendMessage(message);
     } catch {
-      clearInterval(urlTimer); // extension was reloaded - this orphaned script should go quiet
+      // extension was reloaded - this orphaned script has nothing to talk to
     }
   }
 
@@ -76,8 +75,49 @@
     };
   }
 
+  // Boilerplate never describes what is being consumed, and it is most of the markup.
+  // Dropping it is what lets plain text alone carry the judgement.
+  const SKIP_TAGS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'IFRAME', 'OBJECT', 'EMBED',
+    'NAV', 'HEADER', 'FOOTER', 'ASIDE', 'FORM', 'BUTTON', 'SELECT', 'TEXTAREA', 'LABEL',
+  ]);
+  const SKIP_ROLES = new Set([
+    'navigation', 'banner', 'contentinfo', 'complementary', 'search', 'menu', 'menubar',
+    'toolbar', 'tablist', 'dialog', 'alert',
+  ]);
+
+  // A TreeWalker reads the live DOM: cloning first would break innerText, because a
+  // detached node has no layout and falls back to raw textContent.
+  function mainText(limit) {
+    const root = document.querySelector('article, main, [role="main"]') || document.body;
+    if (!root) return '';
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+        if (SKIP_TAGS.has(node.tagName)) return NodeFilter.FILTER_REJECT; // rejects the subtree too
+        if (node.hidden || node.getAttribute('aria-hidden') === 'true') return NodeFilter.FILTER_REJECT;
+        if (SKIP_ROLES.has(node.getAttribute('role'))) return NodeFilter.FILTER_REJECT;
+        // CSS-hidden text (MathML LaTeX annotations, collapsed menus, print-only blocks) would
+        // otherwise eat the budget. Pruning the subtree early makes this cheaper, not dearer.
+        if (node.checkVisibility && !node.checkVisibility()) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    const parts = [];
+    let length = 0;
+    while (length < limit && walker.nextNode()) {
+      if (walker.currentNode.nodeType !== Node.TEXT_NODE) continue;
+      const chunk = walker.currentNode.nodeValue.replace(/\s+/g, ' ').trim();
+      if (chunk.length < 2) continue; // lone bullets, separators, stray punctuation
+      parts.push(chunk);
+      length += chunk.length + 1;
+    }
+    return parts.join(' ').slice(0, limit);
+  }
+
   function extractContent() {
-    const root = document.querySelector('main, article, [role="main"]') || document.body;
     return {
       url: location.href,
       title: document.title,
@@ -89,7 +129,7 @@
       keywords: meta('meta[name="keywords"]').slice(0, 300),
       jsonLd: structuredData(),
       youtube: youtubeDetails(),
-      mainText: (root?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 3000),
+      mainText: mainText(2400),
     };
   }
 
@@ -163,17 +203,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'extractContent') sendResponse(extractContent());
     if (message.type === 'showBlockOverlay') showOverlay();
+    // background saw an SPA navigation: a verdict for the previous page must not block this one
+    if (message.type === 'pageChanged') removeOverlay();
   });
-
-  // ponytail: SPA sites never fire a real navigation - poll the URL instead of wiring per-site nav events
-  let lastUrl = location.href;
-  urlTimer = setInterval(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      removeOverlay(); // a verdict for the previous page must not block this one
-      send({ type: 'navigated', url: location.href });
-    }
-  }, 1000);
-
-  send({ type: 'navigated', url: location.href });
 })();

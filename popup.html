@@ -64,16 +64,16 @@
 
     <figure class="meter-figure">
       <figcaption class="meter-caption">
-        Share of tracked tabs
+        Share of checked tabs
         <span class="meter-hint" id="meterHint">nothing checked yet</span>
       </figcaption>
-      <div class="meter" role="img" id="meter" aria-label="Share of tracked tabs by verdict">
+      <div class="meter" role="img" id="meter" aria-label="Share of checked tabs by verdict">
         <span class="meter-seg seg-good" id="segAllow"></span>
         <span class="meter-seg seg-critical" id="segBlock"></span>
         <span class="meter-seg seg-warning" id="segError"></span>
         <span class="meter-seg seg-pending" id="segPending"></span>
       </div>
-      <ul class="legend" id="legend">
+      <ul class="legend">
         <li><span class="swatch sw-good"></span>Focused <b id="legAllow">0</b></li>
         <li><span class="swatch sw-critical"></span>Blocked <b id="legBlock">0</b></li>
         <li><span class="swatch sw-warning"></span>Errors <b id="legError">0</b></li>
@@ -85,9 +85,8 @@
     <div class="quickbar">
       <label class="stepper-label" for="quickMinutes">Check after</label>
       <div class="stepper">
-        <button type="button" class="step" id="minusMinutes" aria-label="Decrease minutes">&minus;</button>
-        <input type="number" id="quickMinutes" min="1" max="120" step="1" inputmode="numeric" aria-label="Minutes before a page is checked">
-        <button type="button" class="step" id="plusMinutes" aria-label="Increase minutes">+</button>
+        <input type="number" id="quickMinutes" min="1" max="120" step="1" inputmode="numeric"
+               aria-label="Minutes a page may stay open before it is checked">
         <span class="stepper-unit">min</span>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="recheckAll">Recheck all</button>
@@ -109,33 +108,59 @@
   <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
 
     <div class="field">
+      <span class="field-title" id="providerLabel">Provider</span>
+      <div class="segmented" role="radiogroup" aria-labelledby="providerLabel">
+        <button type="button" class="seg is-active" role="radio" aria-checked="true" data-provider="gemini">Google Gemini</button>
+        <button type="button" class="seg" role="radio" aria-checked="false" data-provider="openrouter">OpenRouter</button>
+      </div>
+    </div>
+
+    <div data-for="gemini">
+      <div class="field">
+        <div class="field-head">
+          <label for="apiKey">Gemini API key</label>
+          <button type="button" class="link-btn" data-reveal="apiKey" aria-pressed="false">Show</button>
+        </div>
+        <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+        <p class="help">Stored locally in this browser profile. Never sent anywhere but Google's API.</p>
+      </div>
+
+      <div class="field">
+        <label for="model">Gemini model</label>
+        <select id="model"></select>
+        <input type="text" id="customModel" placeholder="model-id" autocomplete="off" spellcheck="false" hidden>
+        <p class="help">If this model is busy or over quota, the next one in the list answers instead, automatically.</p>
+      </div>
+    </div>
+
+    <div data-for="openrouter" hidden>
+      <div class="field">
+        <div class="field-head">
+          <label for="openrouterApiKey">OpenRouter API key</label>
+          <button type="button" class="link-btn" data-reveal="openrouterApiKey" aria-pressed="false">Show</button>
+        </div>
+        <input type="password" id="openrouterApiKey" placeholder="sk-or-v1-…" autocomplete="off" spellcheck="false">
+        <p class="help">Stored locally in this browser profile. Never sent anywhere but openrouter.ai.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="openrouterModel">OpenRouter model</label>
+          <span class="counter" id="orCount">1 model</span>
+        </div>
+        <select id="openrouterModel"></select>
+        <p class="help">This model routes every check. If it is busy or unavailable, the others you added answer instead, automatically. Ids ending in <code>:free</code> cost nothing.</p>
+      </div>
+    </div>
+
+    <div class="field">
       <div class="field-head">
-        <label for="apiKey">Gemini API key</label>
-        <button type="button" class="link-btn" id="toggleKey" aria-pressed="false">Show</button>
+        <label for="skipHosts">Never check these sites</label>
+        <span class="counter" id="skipCount">0 sites</span>
       </div>
-      <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
-      <p class="help">Stored locally in this browser profile. Never sent anywhere but Google's API.</p>
-    </div>
-
-    <div class="field">
-      <label for="model">Gemini model</label>
-      <input type="text" id="model" list="modelOptions" placeholder="gemini-3.6-flash" autocomplete="off" spellcheck="false">
-      <datalist id="modelOptions">
-        <option value="gemini-3.6-flash"></option>
-        <option value="gemini-2.5-flash"></option>
-        <option value="gemini-2.5-flash-lite"></option>
-        <option value="gemini-2.5-pro"></option>
-      </datalist>
-      <p class="help">Flash models are fast and cheap enough to run on every tab.</p>
-    </div>
-
-    <div class="field">
-      <label for="checkMinutes">Check a page after</label>
-      <div class="suffix-input">
-        <input type="number" id="checkMinutes" min="1" max="120" step="1" inputmode="numeric" placeholder="2">
-        <span class="suffix">minutes</span>
-      </div>
-      <p class="help">How long a page may stay open before it gets judged.</p>
+      <textarea id="skipHosts" class="ta-sm" spellcheck="false" autocomplete="off"
+                placeholder="bank.com&#10;*.internal.corp&#10;mail.proton.me"></textarea>
+      <p class="help">One host per line. Their text is never read, so nothing about them reaches the model. Subdomains are covered.</p>
     </div>
 
     <div class="field">
@@ -164,7 +189,7 @@
       <textarea id="systemPrompt" spellcheck="false" aria-describedby="promptHelp"></textarea>
       <p class="help" id="promptHelp">
         Leave this empty to keep the greyed-out template below. Anything you type replaces it.
-        Page signals and the screenshot are appended automatically, so end with the reply format you want.
+        The page's signals are appended automatically, so end with the reply format you want.
       </p>
     </div>
 
@@ -178,7 +203,20 @@
 
 </main>
 
-<script src="prompt.js"></script>
+<dialog id="modelDialog" aria-labelledby="modelDialogTitle">
+  <form method="dialog" id="modelForm">
+    <label for="newModelId" id="modelDialogTitle">Add an OpenRouter model</label>
+    <input type="text" id="newModelId" placeholder="vendor/model-name:free" autocomplete="off"
+           spellcheck="false" required pattern="\S+/\S+" aria-describedby="newModelHelp">
+    <p class="help" id="newModelHelp">Copy the id from openrouter.ai/models. It becomes the model in use; the one you had drops to a fallback.</p>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary">Add model</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="cancelModel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="shared.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>
