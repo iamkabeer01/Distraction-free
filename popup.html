@@ -1,57 +1,184 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Distraction Free</title>
-<style>
-  body { font-family: system-ui, sans-serif; width: 360px; padding: 12px; }
-  h3 { margin: 0 0 8px; }
-  section { margin-bottom: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { text-align: left; padding: 4px; border-bottom: 1px solid #eee; }
-  td.site { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  tbody { display: block; max-height: 200px; overflow-y: auto; }
-  thead tr, tbody tr { display: table; width: 100%; table-layout: fixed; }
-  .verdict-allow { color: #2e7d32; font-weight: 600; }
-  .verdict-block { color: #c62828; font-weight: 600; }
-  .verdict-error { color: #ef6c00; font-weight: 600; cursor: help; }
-  .pending { color: #777; }
-  .stat { font-size: 12px; color: #555; margin-top: 8px; }
-  details summary { cursor: pointer; font-size: 12px; color: #666; margin-top: 4px; }
-  label { display: block; margin-top: 8px; font-size: 12px; color: #333; }
-  input { width: 100%; padding: 5px 7px; margin-top: 3px; box-sizing: border-box; font-size: 12px; }
-  button { margin-top: 8px; padding: 6px 14px; cursor: pointer; font-size: 12px; }
-  #status { margin-top: 6px; font-size: 11px; }
-</style>
+<link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <h3>Distraction Free</h3>
 
-  <section>
-    <table>
-      <thead>
-        <tr><th>Site</th><th>Open</th><th>Status</th></tr>
-      </thead>
-      <tbody id="tabList"></tbody>
-    </table>
-    <div class="stat">Distracted tabs closed: <strong id="distractedCount">0</strong></div>
+<header class="topbar">
+  <img class="brand-mark" src="icons/logo.svg" alt="" width="28" height="28">
+  <div class="brand-text">
+    <span class="brand-name">Distraction Free</span>
+    <span class="brand-sub" id="guardState">watching your tabs</span>
+  </div>
+  <button type="button" class="icon-btn" id="themeToggle" aria-label="Switch colour theme" title="Switch colour theme">
+    <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <circle cx="10" cy="10" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M4 4l1.4 1.4M14.6 14.6L16 16M16 4l-1.4 1.4M5.4 14.6L4 16"
+            stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>
+  </button>
+</header>
+
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button type="button" role="tab" id="tab-monitor" class="tab is-active" aria-controls="panel-monitor" aria-selected="true">Monitor</button>
+  <button type="button" role="tab" id="tab-settings" class="tab" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
+  <button type="button" role="tab" id="tab-prompt" class="tab" aria-controls="panel-prompt" aria-selected="false" tabindex="-1">Prompt</button>
+  <span class="tab-ink" id="tabInk" aria-hidden="true"></span>
+</nav>
+
+<main class="panels">
+
+  <!-- ─────────────── MONITOR ─────────────── -->
+  <section class="panel is-active" id="panel-monitor" role="tabpanel" aria-labelledby="tab-monitor" tabindex="0">
+
+    <div class="alert alert-critical" id="noKeyAlert" hidden>
+      <svg class="alert-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M8 1.6 15 14H1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M8 6v3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        <circle cx="8" cy="11.9" r="0.95" fill="currentColor"/>
+      </svg>
+      <div>
+        <strong>No API key saved.</strong> Nothing is being checked yet.
+        <button type="button" class="link-btn" data-goto="settings">Add your key</button>
+      </div>
+    </div>
+
+    <!-- KPI row: three stat tiles over one segmented ratio meter -->
+    <div class="stats">
+      <div class="tile tile-good">
+        <span class="tile-label">Focused</span>
+        <span class="tile-value" id="statAllow">0</span>
+      </div>
+      <div class="tile tile-critical">
+        <span class="tile-label">Blocked</span>
+        <span class="tile-value" id="statBlock">0</span>
+      </div>
+      <div class="tile tile-accent">
+        <span class="tile-label">Closed today</span>
+        <span class="tile-value" id="statClosed">0</span>
+      </div>
+    </div>
+
+    <figure class="meter-figure">
+      <figcaption class="meter-caption">
+        Share of tracked tabs
+        <span class="meter-hint" id="meterHint">nothing checked yet</span>
+      </figcaption>
+      <div class="meter" role="img" id="meter" aria-label="Share of tracked tabs by verdict">
+        <span class="meter-seg seg-good" id="segAllow"></span>
+        <span class="meter-seg seg-critical" id="segBlock"></span>
+        <span class="meter-seg seg-warning" id="segError"></span>
+        <span class="meter-seg seg-pending" id="segPending"></span>
+      </div>
+      <ul class="legend" id="legend">
+        <li><span class="swatch sw-good"></span>Focused <b id="legAllow">0</b></li>
+        <li><span class="swatch sw-critical"></span>Blocked <b id="legBlock">0</b></li>
+        <li><span class="swatch sw-warning"></span>Errors <b id="legError">0</b></li>
+        <li><span class="swatch sw-pending"></span>Pending <b id="legPending">0</b></li>
+      </ul>
+    </figure>
+
+    <!-- quick settings: the controls that drive what this view does -->
+    <div class="quickbar">
+      <label class="stepper-label" for="quickMinutes">Check after</label>
+      <div class="stepper">
+        <button type="button" class="step" id="minusMinutes" aria-label="Decrease minutes">&minus;</button>
+        <input type="number" id="quickMinutes" min="1" max="120" step="1" inputmode="numeric" aria-label="Minutes before a page is checked">
+        <button type="button" class="step" id="plusMinutes" aria-label="Increase minutes">+</button>
+        <span class="stepper-unit">min</span>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="recheckAll">Recheck all</button>
+    </div>
+
+    <div class="filters" role="group" aria-label="Filter tabs by verdict">
+      <button type="button" class="chip is-active" data-filter="all">All <b id="cAll">0</b></button>
+      <button type="button" class="chip" data-filter="BLOCK">Blocked <b id="cBlock">0</b></button>
+      <button type="button" class="chip" data-filter="ALLOW">Focused <b id="cAllow">0</b></button>
+      <button type="button" class="chip" data-filter="pending">Pending <b id="cPending">0</b></button>
+    </div>
+
+    <ul class="tablist" id="tabList" aria-live="polite"></ul>
+
+    <p class="panel-foot">Counters reset daily at noon.</p>
   </section>
 
-  <details>
-    <summary>Settings</summary>
-    <label>Gemini API key
-      <input type="password" id="apiKey" placeholder="AIza...">
-    </label>
-    <label>Gemini model
-      <input type="text" id="model" placeholder="gemini-3.6-flash">
-    </label>
-    <label>Check after (minutes)
-      <input type="number" id="checkMinutes" min="1" step="1" placeholder="2">
-    </label>
-    <button id="save">Save</button>
-    <div id="status"></div>
-  </details>
+  <!-- ─────────────── SETTINGS ─────────────── -->
+  <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
 
-  <script src="popup.js"></script>
+    <div class="field">
+      <div class="field-head">
+        <label for="apiKey">Gemini API key</label>
+        <button type="button" class="link-btn" id="toggleKey" aria-pressed="false">Show</button>
+      </div>
+      <input type="password" id="apiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+      <p class="help">Stored locally in this browser profile. Never sent anywhere but Google's API.</p>
+    </div>
+
+    <div class="field">
+      <label for="model">Gemini model</label>
+      <input type="text" id="model" list="modelOptions" placeholder="gemini-3.6-flash" autocomplete="off" spellcheck="false">
+      <datalist id="modelOptions">
+        <option value="gemini-3.6-flash"></option>
+        <option value="gemini-2.5-flash"></option>
+        <option value="gemini-2.5-flash-lite"></option>
+        <option value="gemini-2.5-pro"></option>
+      </datalist>
+      <p class="help">Flash models are fast and cheap enough to run on every tab.</p>
+    </div>
+
+    <div class="field">
+      <label for="checkMinutes">Check a page after</label>
+      <div class="suffix-input">
+        <input type="number" id="checkMinutes" min="1" max="120" step="1" inputmode="numeric" placeholder="2">
+        <span class="suffix">minutes</span>
+      </div>
+      <p class="help">How long a page may stay open before it gets judged.</p>
+    </div>
+
+    <div class="field">
+      <div class="field-head">
+        <span class="field-title">Active system prompt</span>
+        <span class="badge" id="promptBadge">Default</span>
+      </div>
+      <div class="prompt-preview" id="promptPreview"></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-goto="prompt">Edit prompt</button>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn btn-primary" id="save">Save settings</button>
+      <span class="status" id="status" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <!-- ─────────────── PROMPT ─────────────── -->
+  <section class="panel" id="panel-prompt" role="tabpanel" aria-labelledby="tab-prompt" tabindex="0" hidden>
+
+    <div class="field field-grow">
+      <div class="field-head">
+        <label for="systemPrompt">System prompt</label>
+        <span class="counter" id="promptCount">using template</span>
+      </div>
+      <textarea id="systemPrompt" spellcheck="false" aria-describedby="promptHelp"></textarea>
+      <p class="help" id="promptHelp">
+        Leave this empty to keep the greyed-out template below. Anything you type replaces it.
+        Page signals and the screenshot are appended automatically, so end with the reply format you want.
+      </p>
+    </div>
+
+    <div class="actions actions-wrap">
+      <button type="button" class="btn btn-primary" id="savePrompt">Save prompt</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="loadTemplate">Copy template in</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="resetPrompt">Reset to default</button>
+      <span class="status" id="promptStatus" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+
+</main>
+
+<script src="prompt.js"></script>
+<script src="popup.js"></script>
 </body>
 </html>

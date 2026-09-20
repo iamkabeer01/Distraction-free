@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Distraction Free">
+  <defs>
+    <linearGradient id="df-badge" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#519bf5"/>
+      <stop offset="1" stop-color="#1857ae"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="29" fill="url(#df-badge)"/>
+  <circle cx="64" cy="64" r="28" fill="none" stroke="#fff" stroke-width="12"
+          stroke-linecap="round" stroke-dasharray="148.5 27.4" transform="rotate(-8 64 64)"/>
+  <circle cx="64" cy="64" r="13" fill="#fff"/>
+</svg>

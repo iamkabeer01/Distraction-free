@@ -110,18 +110,46 @@
     const overlay = document.createElement('div');
     overlay.id = OVERLAY_ID;
     overlay.style.cssText = `
-      position: fixed; inset: 0; width: 100vw; height: 100vh;
-      background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+      all: initial; position: fixed; inset: 0; width: 100vw; height: 100vh;
+      background: rgba(10, 12, 16, 0.55); backdrop-filter: blur(26px) saturate(120%);
+      -webkit-backdrop-filter: blur(26px) saturate(120%);
       z-index: 2147483647;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      color: #fff; font-family: system-ui, sans-serif; text-align: center;
+      display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     `;
+    // the page underneath is arbitrary, so this card carries its own fixed dark theme
     overlay.innerHTML = `
-      <div style="font-size: 22px; margin-bottom: 24px; max-width: 480px; text-shadow: 0 1px 4px rgba(0,0,0,0.8);">You are wasting your time here.</div>
-      <button id="__df_close_btn__" style="font-size: 16px; padding: 10px 24px; cursor: pointer; border: none; border-radius: 6px; background: #e53935; color: #fff;">Close site</button>
+      <div style="all:initial;font-family:inherit;box-sizing:border-box;display:flex;flex-direction:column;
+                  align-items:center;text-align:center;gap:14px;max-width:380px;padding:34px 32px 30px;
+                  background:#1a1a19;border:1px solid rgba(255,255,255,.1);border-radius:16px;
+                  box-shadow:0 24px 70px rgba(0,0,0,.55);color:#f5f5f2;">
+        <svg width="46" height="46" viewBox="0 0 128 128" aria-hidden="true" style="all:initial;display:block;">
+          <defs><linearGradient id="__dfg" x1="0" y1="0" x2="0.35" y2="1">
+            <stop offset="0" stop-color="#519bf5"/><stop offset="1" stop-color="#1857ae"/></linearGradient></defs>
+          <rect width="128" height="128" rx="29" fill="url(#__dfg)"/>
+          <circle cx="64" cy="64" r="28" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round"
+                  stroke-dasharray="148.5 27.4" transform="rotate(-8 64 64)"/>
+          <circle cx="64" cy="64" r="13" fill="#fff"/>
+        </svg>
+        <div style="all:initial;font-family:inherit;font-size:11px;font-weight:600;letter-spacing:.09em;
+                    text-transform:uppercase;color:#8f8d86;">Distraction Free</div>
+        <div style="all:initial;font-family:inherit;font-size:21px;font-weight:640;line-height:1.3;color:#f5f5f2;">
+          You are wasting your time here.</div>
+        <div style="all:initial;font-family:inherit;font-size:13px;line-height:1.5;color:#b9b8b0;">
+          This page was judged as time-wasting content. Playback is paused.</div>
+        <button id="__df_close_btn__" style="all:initial;font-family:inherit;box-sizing:border-box;
+                margin-top:6px;padding:11px 26px;border-radius:8px;background:#1f6fc9;color:#ffffff;
+                font-size:14px;font-weight:600;cursor:pointer;text-align:center;
+                box-shadow:0 2px 10px rgba(31,111,201,.4);">Close this tab</button>
+      </div>
     `;
     document.documentElement.appendChild(overlay);
-    document.getElementById('__df_close_btn__').addEventListener('click', () => send({ type: 'closeTab' }));
+
+    const btn = document.getElementById('__df_close_btn__');
+    btn.addEventListener('click', () => send({ type: 'closeTab' }));
+    btn.addEventListener('mouseenter', () => (btn.style.background = '#1a62b6'));
+    btn.addEventListener('mouseleave', () => (btn.style.background = '#1f6fc9'));
+    btn.focus();
 
     repauseTimer = setInterval(pauseMedia, 1000); // players and ad breaks restart themselves
   }
