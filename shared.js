@@ -129,8 +129,8 @@ const isRestrictedUrl = (url) => RESTRICTED_URL.test(String(url || ''));
 const fenceSafe = (value) => String(value ?? '').replace(/<\/?page_signals>/gi, '[fence]');
 
 // The query string is part of a page's identity: /search?q=react and /search?q=drama are
-// different pages and must not share one verdict. Unblocking does not use this - a pass is
-// granted against the whole url, so it can never be wider than the page you were looking at.
+// different pages and must not share one verdict. Unblocking keys its one-hour passes off
+// this too, so the page that was blocked and the page that gets the pass are the same page.
 function cacheKeyFor(url) {
   const u = new URL(url);
   if (u.hostname.endsWith('youtube.com')) return 'yt:' + (u.searchParams.get('v') || u.pathname + u.search);

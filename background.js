@@ -65,19 +65,33 @@ async function getUnblocked() {
   return stored[UNBLOCKED_KEY] || {};
 }
 
-// Keyed by the whole url, query string and fragment included, and holding the moment the
-// pass runs out. Exact, so unblocking one page never quietly unblocks its neighbours.
+// The same page identity that decided BLOCK is the one that gets the pass, so a scroll to
+// an anchor, a #fragment, a ?t=90 or a share tag cannot quietly put the wall back up mid-hour.
+// Still per page, not per site: unblocking one video never unblocks the feed it came from.
+function unblockKey(url) {
+  try {
+    return cacheKeyFor(url);
+  } catch {
+    return String(url || ''); // unparseable: fall back to the raw string rather than throw
+  }
+}
+
+// A value is the moment the pass runs out, and nothing else counts as one. A build that
+// stored some other shape here must not read as a pass that never expires, and `x <= now`
+// is false for a non-number, so junk would otherwise sit in storage forever.
+const passUntil = (value) => (Number.isFinite(value) ? value : 0);
+
 async function isUnblocked(url) {
-  return (await getUnblocked())[url] > Date.now();
+  return passUntil((await getUnblocked())[unblockKey(url)]) > Date.now();
 }
 
 async function rememberUnblocked(url) {
   const all = await getUnblocked();
   const now = Date.now();
   for (const [page, until] of Object.entries(all)) {
-    if (until <= now) delete all[page]; // lapsed passes are the only thing that prunes this
+    if (passUntil(until) <= now) delete all[page]; // lapsed and malformed passes both go
   }
-  all[url] = now + UNBLOCK_TTL_MS;
+  all[unblockKey(url)] = now + UNBLOCK_TTL_MS;
   await chrome.storage.local.set({ [UNBLOCKED_KEY]: all });
 }
 
@@ -290,7 +304,7 @@ async function watchdog() {
   for (const [id, entry] of Object.entries(tracking)) {
     // this runs every minute, so an hour's pass lapses within a minute of running out
     if (entry.verdict === 'UNBLOCK') {
-      if (!(unblocked[entry.url] > now)) await expireUnblock(Number(id));
+      if (passUntil(unblocked[unblockKey(entry.url)]) <= now) await expireUnblock(Number(id));
       continue;
     }
     if (entry.verdict) continue;

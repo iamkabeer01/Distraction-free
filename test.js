@@ -29,6 +29,16 @@ assert.notStrictEqual(
 assert.strictEqual(cacheKeyFor('https://youtube.com/watch?v=abc&t=90'), 'yt:abc');
 assert.strictEqual(cacheKeyFor('https://a.dev/docs?x=1'), 'a.dev/docs?x=1');
 
+// One-hour unblock passes are keyed off this, so anything that leaves the page you are on
+// must not change the key - otherwise a jump to an anchor re-blocks a page mid-pass.
+assert.strictEqual(cacheKeyFor('https://a.dev/docs?x=1#install'), cacheKeyFor('https://a.dev/docs?x=1'));
+assert.strictEqual(
+  cacheKeyFor('https://youtube.com/watch?v=abc&t=90&list=xyz'),
+  cacheKeyFor('https://youtube.com/watch?v=abc')
+);
+// but a different page still is one: a pass must never widen to the whole site
+assert.notStrictEqual(cacheKeyFor('https://youtube.com/watch?v=abc'), cacheKeyFor('https://youtube.com/'));
+
 assert.deepStrictEqual(parseSkipHosts('Example.com, *.bank.co.uk\n https://mail.proton.me/inbox'), [
   'example.com',
   'bank.co.uk',
@@ -178,6 +188,34 @@ assert.strictEqual(readVerdict('gemini', {}), null);
    the class of breakage that still parses cleanly. A patch once cut the monitor's entire
    render loop out of popup.js: node --check passed, every test passed, and the popup drew
    nothing at all. */
+
+// the unblock pass and the verdict it overrides have to agree on what "this page" means
+const backgroundJs = readFileSync(`${__dirname}/background.js`, 'utf8');
+assert.ok(
+  /function unblockKey\(url\)[\s\S]{0,200}cacheKeyFor\(url\)/.test(backgroundJs),
+  'background.js must key unblock passes off cacheKeyFor'
+);
+// A pass is a timestamp or it is not a pass. A stale build stored the page's url here, and
+// a truthy read turned a one-hour pass into a permanent one - so run the real predicate.
+const passUntil = new Function(
+  `${/const passUntil = .*;/.exec(backgroundJs)[0]} return passUntil;`
+)();
+const HOUR = 60 * 60 * 1000;
+const t0 = Date.now();
+assert.ok(passUntil(t0 + HOUR) > t0, 'a fresh pass is live');
+assert.ok(!(passUntil(t0 - 1) > t0), 'a lapsed pass is dead');
+assert.ok(!(passUntil('https://www.linkedin.com/feed/') > t0), 'a url is not a pass');
+assert.ok(!(passUntil(true) > t0) && !(passUntil(undefined) > t0) && !(passUntil(null) > t0));
+// and the prune must actually remove those, or they sit in storage forever
+assert.ok(passUntil('https://www.linkedin.com/feed/') <= t0, 'malformed passes get pruned');
+for (const needle of [
+  '[unblockKey(url)] = now + UNBLOCK_TTL_MS',
+  'passUntil((await getUnblocked())[unblockKey(url)]) > Date.now()',
+  'passUntil(until) <= now',
+  'passUntil(unblocked[unblockKey(entry.url)]) <= now',
+]) {
+  assert.ok(backgroundJs.includes(needle), `background.js has lost: ${needle}`);
+}
 
 const popupJs = readFileSync(`${__dirname}/popup.js`, 'utf8');
 const popupHtml = readFileSync(`${__dirname}/popup.html`, 'utf8');
