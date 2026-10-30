@@ -623,22 +623,73 @@ skipInput.addEventListener('input', renderSkipCount);
 
 /* ── timed sites ────────────────────────────────────────────────
    Saved as they change rather than behind Save settings, which exists to test an API
-   key - none of this touches a provider. rearmAll re-judges the open tabs, so a site
-   added to the list stops being asked about from the moment it is typed.          */
+   key - none of this touches a provider. Only the user's own additions are stored; the
+   built-in eight are the feature itself and are not editable away.                  */
 const timedToggle = $('timedEnabled');
-const timedInput = $('timedHosts');
 const quotaInput = $('quotaMinutes');
 const cooldownInput = $('cooldownMinutes');
-
-function renderTimedCount() {
-  const n = parseSkipHosts(timedInput.value).length;
-  $('timedCount').textContent = `${n} site${n === 1 ? '' : 's'}`;
-}
+const newHostInput = $('newTimedHost');
+let extraHosts = [];
 
 function saveTimed(settings, message) {
   chrome.storage.local.set(settings, () => chrome.runtime.sendMessage({ type: 'rearmAll' }));
   if (message) say(status, message, '');
 }
+
+function hostChip(host, locked) {
+  const li = document.createElement('li');
+  li.className = locked ? 'host is-locked' : 'host';
+  li.append(host);
+  if (locked) {
+    li.title = 'Built in. This one stays on the list.';
+    return li;
+  }
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.className = 'host-drop';
+  drop.textContent = '\u00d7';
+  drop.title = `Take ${host} off the clock`;
+  drop.setAttribute('aria-label', `Take ${host} off the clock`);
+  drop.addEventListener('click', () => {
+    extraHosts = extraHosts.filter((h) => h !== host);
+    renderTimedHosts();
+    saveTimed({ timedExtraHosts: extraHosts.join('\n') }, `${host} is off the clock.`);
+  });
+  li.appendChild(drop);
+  return li;
+}
+
+function renderTimedHosts() {
+  const list = $('timedChips');
+  list.replaceChildren();
+  for (const host of BUILT_IN_TIMED_HOSTS) list.appendChild(hostChip(host, true));
+  for (const host of extraHosts) list.appendChild(hostChip(host, false));
+  const n = BUILT_IN_TIMED_HOSTS.length + extraHosts.length;
+  $('timedCount').textContent = `${n} site${n === 1 ? '' : 's'}`;
+}
+
+function addTimedHost() {
+  // the same parser the worker matches with, so what you type is what gets timed
+  const [host] = parseSkipHosts(newHostInput.value);
+  if (!host) {
+    newHostInput.focus();
+    return;
+  }
+  if (BUILT_IN_TIMED_HOSTS.includes(host) || extraHosts.includes(host)) {
+    say(status, `${host} is already on the clock.`, 'warn');
+    newHostInput.value = '';
+    return;
+  }
+  extraHosts.push(host);
+  newHostInput.value = '';
+  renderTimedHosts();
+  saveTimed({ timedExtraHosts: extraHosts.join('\n') }, `${host} is on the clock.`);
+}
+
+$('addTimedHost').addEventListener('click', addTimedHost);
+newHostInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') addTimedHost(); // typing a host and hitting enter is the whole gesture
+});
 
 timedToggle.addEventListener('change', () =>
   saveTimed(
@@ -646,9 +697,6 @@ timedToggle.addEventListener('change', () =>
     timedToggle.checked ? 'Timed sites are on.' : 'Timed sites are off. The model judges them again.'
   )
 );
-
-timedInput.addEventListener('input', renderTimedCount);
-timedInput.addEventListener('change', () => saveTimed({ timedHosts: timedInput.value.trim() }, 'Timed sites saved.'));
 
 for (const [input, key, fallback] of [
   [quotaInput, 'quotaMinutes', DEFAULT_QUOTA_MINUTES],
@@ -665,7 +713,7 @@ chrome.storage.local.get(
   [
     'provider', 'geminiApiKey', 'geminiModel', 'openrouterApiKey', 'openrouterModels',
     'ollamaApiKey', 'ollamaModels', 'checkMinutes', 'systemPrompt', 'skipHosts', 'unblockEnabled',
-    'timedEnabled', 'timedHosts', 'quotaMinutes', 'cooldownMinutes',
+    'timedEnabled', 'timedExtraHosts', 'quotaMinutes', 'cooldownMinutes',
   ],
   (stored) => {
     showProvider(stored.provider);
@@ -682,15 +730,14 @@ chrome.storage.local.get(
     promptInput.value = stored.systemPrompt || '';
     skipInput.value = stored.skipHosts || '';
     timedToggle.checked = stored.timedEnabled !== false;
-    // ?? not ||: an emptied list is the user switching every site off, not a missing setting
-    timedInput.value = stored.timedHosts ?? DEFAULT_TIMED_HOSTS;
+    extraHosts = extraTimedHosts(stored.timedExtraHosts);
     quotaInput.value = Number(stored.quotaMinutes) > 0 ? stored.quotaMinutes : DEFAULT_QUOTA_MINUTES;
     cooldownInput.value =
       Number(stored.cooldownMinutes) > 0 ? stored.cooldownMinutes : DEFAULT_COOLDOWN_MINUTES;
     renderPromptPreview();
     renderPromptCount();
     renderSkipCount();
-    renderTimedCount();
+    renderTimedHosts();
   }
 );
 

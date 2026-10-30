@@ -1,4 +1,6 @@
 // node test.js - the one runnable check behind the non-obvious logic in shared.js
+// and, past the ledger, behind background.js itself: driven, not grepped.
+(async () => {
 const assert = require('node:assert');
 const { readFileSync } = require('node:fs');
 
@@ -8,13 +10,13 @@ const {
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
-  quotaStep, timedHostFor, MAX_SLICE_MS, DEFAULT_TIMED_HOSTS,
+  quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
 } = new Function(`${src}; return {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
-  quotaStep, timedHostFor, MAX_SLICE_MS, DEFAULT_TIMED_HOSTS,
+  quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
 };`)();
 
 // a page must not be able to close the fence and have its own text read as instructions
@@ -215,12 +217,16 @@ for (const needle of [
   'passUntil((await getUnblocked())[unblockKey(url)]) > Date.now()',
   'passUntil(until) <= now',
   'passUntil(unblocked[unblockKey(entry.url)]) <= now',
-  // the clock cannot run without these: the ledger write, the poll answer, and the
-  // verdict that keeps a timed site away from the model
+  // the clock cannot run without these: the ledger write, the tick, the focus check
+  // that decides who is spending, and the verdict that keeps a timed site off the model
   'function updateTimed(',
-  'async function quotaSync(',
+  'async function tickQuota(',
+  'async function activeTimedSite(',
   "return 'TIMED'",
   'return true; // answered asynchronously',
+  // every driver of the clock. Losing the alarm is what let Instagram run forever.
+  'tickQuota(); // the floor under the clock',
+  'chrome.windows.onFocusChanged.addListener',
 ]) {
   assert.ok(backgroundJs.includes(needle), `background.js has lost: ${needle}`);
 }
@@ -231,12 +237,23 @@ const QUOTA = 5 * 60000;
 const COOL = 60 * 60000;
 
 // the budget belongs to the site, so every surface of it spends the same minutes
-const timedHosts = parseSkipHosts(DEFAULT_TIMED_HOSTS);
+const timedHosts = timedHostList('');
 assert.strictEqual(timedHostFor('www.instagram.com', timedHosts), 'instagram.com');
 assert.strictEqual(timedHostFor('m.youtube.com', timedHosts), 'youtube.com');
 assert.strictEqual(timedHostFor('github.com', timedHosts), null);
 // and a lookalike host must not borrow it
 assert.strictEqual(timedHostFor('notinstagram.com', timedHosts), null);
+
+// what the user adds rides alongside the built-in eight; what they cannot do is drop one
+assert.ok(timedHostList('pinterest.com').includes('pinterest.com'));
+for (const built of BUILT_IN_TIMED_HOSTS) {
+  assert.ok(timedHostList('pinterest.com').includes(built), `${built} must stay on the list`);
+}
+// only their own additions come back out, so a built-in can never end up with a remove button
+assert.deepStrictEqual(extraTimedHosts('pinterest.com\ninstagram.com'), ['pinterest.com']);
+assert.deepStrictEqual(extraTimedHosts(''), []);
+// and the same spellings the skip list accepts work here too
+assert.deepStrictEqual(extraTimedHosts('https://*.pinterest.com/pins'), ['pinterest.com']);
 
 // watch it for five minutes, ten seconds at a time, and it shuts on the last one
 let t = 1_000_000;
@@ -282,6 +299,153 @@ for (const junk of [undefined, {}, { usedMs: 'lots', blockedUntil: 'never', sinc
 const parked = quotaStep({ usedMs: 60000, blockedUntil: 0, since: 0 }, t + COOL, QUOTA, COOL);
 assert.strictEqual(parked.remainingMs, QUOTA - 60000);
 
+/* ── background.js, actually driven ───────────────────────────────────
+   The ledger maths above was right while the shipped build still let Instagram run
+   for eight minutes, because nothing was calling it. So this runs the worker itself
+   against a fake clock and a fake chrome, one failure mode at a time.           */
+const vm = require('node:vm');
+
+function worker() {
+  const store = {};
+  const world = { now: 1e9, focused: true, activeUrl: 'https://www.instagram.com/' };
+  let onMessage = null;
+
+  const chrome = {
+    storage: {
+      local: {
+        get: async (keys) => {
+          const out = {};
+          for (const k of [].concat(keys)) if (k in store) out[k] = store[k];
+          return out;
+        },
+        set: async (obj) => Object.assign(store, obj),
+      },
+      onChanged: { addListener() {} },
+    },
+    alarms: { create() {}, clear() {}, getAll: async () => [], onAlarm: { addListener() {} } },
+    tabs: {
+      get: async () => ({ id: 7, url: world.activeUrl }),
+      query: async () => [{ id: 7, url: world.activeUrl, windowId: 1, active: true }],
+      update: async () => {}, remove() {},
+      sendMessage: (id, m, cb) => (cb ? cb(true) : Promise.resolve(true)),
+      onUpdated: { addListener() {} }, onActivated: { addListener() {} }, onRemoved: { addListener() {} },
+    },
+    windows: {
+      getLastFocused: async () => ({ id: 1, focused: world.focused }),
+      update: async () => {}, onFocusChanged: { addListener() {} },
+    },
+    scripting: { executeScript: async () => {} },
+    webNavigation: {
+      onHistoryStateUpdated: { addListener() {} }, onReferenceFragmentUpdated: { addListener() {} },
+    },
+    runtime: {
+      onInstalled: { addListener() {} }, onStartup: { addListener() {} },
+      onMessage: { addListener: (fn) => (onMessage = fn) },
+      lastError: null,
+    },
+  };
+
+  const box = {
+    chrome, console, URL, Math, JSON, Promise, Object, Number, Set, Map, String, Array, Error, Boolean,
+    importScripts: (f) => vm.runInContext(readFileSync(`${__dirname}/${f}`, 'utf8'), box, { filename: f }),
+    fetch: async () => ({ ok: false, status: 500, text: async () => '' }),
+    crypto: { randomUUID: () => 'id' },
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    AbortSignal: { timeout: () => null },
+    Date: class extends Date {
+      static now() {
+        return world.now;
+      }
+    },
+  };
+  box.self = box;
+  box.globalThis = box;
+  vm.createContext(box);
+  box.self.addEventListener = () => {};
+  vm.runInContext(readFileSync(`${__dirname}/background.js`, 'utf8'), box, { filename: 'background.js' });
+
+  return {
+    world,
+    wait: (ms) => (world.now += ms),
+    tick: () => vm.runInContext('tickQuota()', box), // the watchdog's driver
+    poll: () => new Promise((r) => onMessage({ type: 'quotaSync' }, { tab: { id: 7, url: world.activeUrl } }, r)),
+    spent: () => Math.round((store.timedUsage?.['instagram.com']?.usedMs ?? 0) / 1000),
+    shut: () => (store.timedUsage?.['instagram.com']?.blockedUntil ?? 0) > world.now,
+  };
+}
+
+// The one that shipped broken: not a single content script alive, so nothing polls.
+// The minute watchdog alone has to spend the budget and shut the site.
+{
+  const w = worker();
+  for (let m = 0; m < 8 && !w.shut(); m++) {
+    await w.tick();
+    w.wait(60000);
+  }
+  assert.ok(w.shut(), 'the watchdog alone must shut the site, with no page reporting in');
+  assert.strictEqual(w.spent(), 300, 'and charge exactly the five minutes');
+}
+
+// a page polling every five seconds lands the block on the same second
+{
+  const w = worker();
+  for (let i = 0; i < 80 && !w.shut(); i++) {
+    await w.poll();
+    w.wait(5000);
+  }
+  assert.ok(w.shut());
+  assert.strictEqual(w.spent(), 300);
+}
+
+// the browser behind another app is not your attention, so the clock must not run
+{
+  const w = worker();
+  w.world.focused = false;
+  for (let i = 0; i < 80; i++) {
+    await w.poll();
+    w.wait(5000);
+  }
+  assert.strictEqual(w.spent(), 0, 'an unfocused browser must spend nothing');
+  assert.ok(!w.shut());
+}
+
+// a laptop shut for an hour on an Instagram tab costs one tick, not the budget
+{
+  const w = worker();
+  await w.tick();
+  w.wait(60 * 60000);
+  await w.tick();
+  assert.strictEqual(w.spent(), Math.round(MAX_SLICE_MS / 1000));
+  assert.ok(!w.shut());
+}
+
+// switching to another tab closes the slice, and half an hour there costs nothing
+{
+  const w = worker();
+  await w.tick();
+  w.wait(60000);
+  w.world.activeUrl = 'https://github.com/';
+  await w.tick();
+  w.wait(30 * 60000);
+  await w.tick();
+  assert.strictEqual(w.spent(), 60, 'only the minute it was actually in front');
+  assert.ok(!w.shut());
+}
+
+// and once the cooldown is served the whole budget is there again
+{
+  const w = worker();
+  for (let i = 0; i < 80 && !w.shut(); i++) {
+    await w.poll();
+    w.wait(5000);
+  }
+  assert.ok(w.shut());
+  w.wait(60 * 60000);
+  const back = await w.poll();
+  assert.ok(!back.blocked, 'the hour was served');
+  assert.strictEqual(back.remainingMs, 5 * 60000);
+}
+
 const popupJs = readFileSync(`${__dirname}/popup.js`, 'utf8');
 const popupHtml = readFileSync(`${__dirname}/popup.html`, 'utf8');
 
@@ -294,23 +458,30 @@ for (const needle of [
   'function emptyState(',
   'chrome.storage.onChanged.addListener',
   'setInterval(paint',
-  'function renderTimedCount(',
+  'function renderTimedHosts(',
   'function saveTimed(',
+  'function addTimedHost(',
 ]) {
   assert.ok(popupJs.includes(needle), `popup.js has lost: ${needle}`);
 }
 
 const contentJs = readFileSync(`${__dirname}/content.js`, 'utf8');
 
-// the page-side half: the poll, the answer it reacts to, and the wall it draws
+// the page-side half: the poll, and the wall it draws
 for (const needle of [
   'async function syncQuota(',
   "type: 'quotaSync'",
   "showOverlay('timeup')",
-  'document.hasFocus()',
 ]) {
   assert.ok(contentJs.includes(needle), `content.js has lost: ${needle}`);
 }
+
+// A dropped message must cost one tick, never the timer. The first build gave up for
+// good when the worker was still waking, which is how Instagram ran for eight minutes.
+assert.ok(
+  contentJs.includes('if (!state) return; // worker asleep or restarting'),
+  'content.js must retry an unanswered poll rather than stop polling'
+);
 
 // every element the popup reaches for has to exist in the markup it runs against
 const htmlIds = new Set([...popupHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
@@ -320,3 +491,4 @@ for (const m of popupJs.matchAll(/(^|[^$])\$\('([^']+)'\)/gm)) {
 }
 
 console.log('all checks passed');
+})();

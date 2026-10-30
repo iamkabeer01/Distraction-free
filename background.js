@@ -1,7 +1,7 @@
 importScripts('shared.js');
 // shared.js: DEFAULT_SYSTEM_PROMPT, DEFAULT_MODEL, DEFAULT_CHECK_MINUTES, MAX_ATTEMPTS,
 //            TRANSIENT_STATUS, geminiEndpoint, fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped,
-//            quotaStep, timedHostFor, DEFAULT_TIMED_HOSTS, DEFAULT_QUOTA_MINUTES, DEFAULT_COOLDOWN_MINUTES
+//            quotaStep, timedHostFor, timedHostList, DEFAULT_QUOTA_MINUTES, DEFAULT_COOLDOWN_MINUTES
 
 const RETRY_BACKOFF_MINUTES = [1, 2, 4, 8, 16]; // chrome.alarms will not fire faster than 1 minute
 const STALE_CHECK_MS = 90 * 1000; // a check still flagged running after this was killed with the service worker
@@ -126,11 +126,12 @@ const TIMED_KEY = 'timedUsage';
 const positiveMinutes = (value, fallback) => (Number(value) > 0 ? Number(value) : fallback);
 
 async function timedSettings() {
-  const s = await chrome.storage.local.get(['timedEnabled', 'timedHosts', 'quotaMinutes', 'cooldownMinutes']);
+  const s = await chrome.storage.local.get([
+    'timedEnabled', 'timedExtraHosts', 'quotaMinutes', 'cooldownMinutes',
+  ]);
   return {
     enabled: s.timedEnabled !== false,
-    // ?? not ||: an empty list is the user switching every site off, not a missing setting
-    hosts: parseSkipHosts(s.timedHosts ?? DEFAULT_TIMED_HOSTS),
+    hosts: timedHostList(s.timedExtraHosts),
     quotaMs: positiveMinutes(s.quotaMinutes, DEFAULT_QUOTA_MINUTES) * 60000,
     cooldownMs: positiveMinutes(s.cooldownMinutes, DEFAULT_COOLDOWN_MINUTES) * 60000,
   };
@@ -138,7 +139,7 @@ async function timedSettings() {
 
 // the site this url spends from, or null if it spends nothing
 function timedSiteFor(url, cfg) {
-  if (!cfg.enabled || !cfg.hosts.length) return null;
+  if (!cfg.enabled) return null;
   try {
     return timedHostFor(new URL(url).hostname.toLowerCase(), cfg.hosts);
   } catch {
@@ -146,8 +147,8 @@ function timedSiteFor(url, cfg) {
   }
 }
 
-// same chain as the tracking writes, so two tabs polling at once cannot both read the
-// old budget and write their own slice over the other's
+// same chain as the tracking writes, so two drivers ticking at once cannot both read
+// the old budget and write their own slice over the other's
 function updateTimed(mutate) {
   writeChain = writeChain.then(async () => {
     const stored = await chrome.storage.local.get(TIMED_KEY);
@@ -162,30 +163,75 @@ function updateTimed(mutate) {
   return writeChain;
 }
 
-// -> what the page asking should be showing right now
-async function quotaSync(tab, running) {
-  const cfg = await timedSettings();
-  const site = timedSiteFor(tab.url, cfg);
-  if (!site) return { timed: false };
+// Who the clock is running for: the active tab of the focused window, and only while
+// that window really is focused. Asked of Chrome rather than of the page, because a
+// page that never gets a content script, or whose messages are dropped, would
+// otherwise be free - which is exactly how the first build let Instagram run forever.
+async function activeTimedSite(cfg) {
+  try {
+    const win = await chrome.windows.getLastFocused();
+    if (!win.focused) return null; // browser minimised or behind another app
+    const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
+    return tab?.url ? timedSiteFor(tab.url, cfg) : null;
+  } catch {
+    return null;
+  }
+}
 
-  let out = { timed: false };
+// One tick of the whole ledger: fold the slice onto whichever site is being looked at,
+// close everyone else's, and shut a site the moment its budget is gone. Driven by every
+// tab event, by the minute watchdog and by the pages themselves, so no single one of
+// them is load-bearing.
+async function tickQuota() {
+  const cfg = await timedSettings();
+  const site = await activeTimedSite(cfg);
+  const shut = [];
+  const reopened = [];
+
   await updateTimed((all) => {
     const now = Date.now();
-    const prev = { ...(all[site] || {}) };
-    if (running && !prev.since) prev.since = now; // the slice starts here
-    const step = quotaStep(prev, now, cfg.quotaMs, cfg.cooldownMs);
-    if (!running) step.entry.since = 0; // the slice ends here, its time already folded in
-    all[site] = step.entry;
-    out = {
-      timed: true,
-      site,
-      blocked: step.blocked,
-      remainingMs: step.remainingMs,
-      unblockInMs: step.unblockInMs,
-      quotaMs: cfg.quotaMs,
-    };
+    if (site && !all[site]) all[site] = { usedMs: 0, blockedUntil: 0, since: 0 };
+    for (const [name, prev] of Object.entries(all)) {
+      const wasShut = Number(prev?.blockedUntil) > now;
+      // the looked-at site's slice is open, and starts now if it was not already running
+      const entry = name === site ? { ...prev, since: prev.since || now } : prev;
+      const step = quotaStep(entry, now, cfg.quotaMs, cfg.cooldownMs);
+      if (name !== site) step.entry.since = 0; // nobody is looking: the slice ends here
+      all[name] = step.entry;
+      if (step.blocked && !wasShut) shut.push(name);
+      if (!step.blocked && wasShut) reopened.push(name);
+    }
   });
-  return out;
+
+  for (const name of shut) await paintSite(name, cfg, (id) => showBlockOverlay(id, 'timeup'));
+  for (const name of reopened) {
+    await paintSite(name, cfg, (id) => chrome.tabs.sendMessage(id, { type: 'pageChanged' }).catch(() => {}));
+  }
+}
+
+// every tab on the site, not only the one being looked at: the budget was the site's
+async function paintSite(site, cfg, paint) {
+  for (const tab of await chrome.tabs.query({})) {
+    if (tab.url && timedSiteFor(tab.url, cfg) === site) paint(tab.id);
+  }
+}
+
+// what the page asking should be showing. The tick is the write; this reads it back.
+async function quotaStateFor(url) {
+  const cfg = await timedSettings();
+  const site = timedSiteFor(url, cfg);
+  if (!site) return { timed: false };
+  await tickQuota();
+  const all = (await chrome.storage.local.get(TIMED_KEY))[TIMED_KEY] || {};
+  const step = quotaStep(all[site], Date.now(), cfg.quotaMs, cfg.cooldownMs);
+  return {
+    timed: true,
+    site,
+    blocked: step.blocked,
+    remainingMs: step.remainingMs,
+    unblockInMs: step.unblockInMs,
+    quotaMs: cfg.quotaMs,
+  };
 }
 
 // every way a page is settled before the model is ever asked
@@ -726,6 +772,7 @@ chrome.runtime.onStartup.addListener(init);
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === 'complete') {
     await handleNavigation(tabId, tab.url, tab.title);
+    tickQuota(); // navigating onto or off a timed site moves the clock with it
     const entry = (await getTracking())[tabId];
     if (entry?.checkDue) checkTab(tabId);
     // A reload builds a new document, so the overlay dies with the old one - but the URL
@@ -739,6 +786,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 function handleSpaNavigation({ tabId, frameId, url }) {
   if (frameId !== 0) return;
   handleNavigation(tabId, url);
+  tickQuota();
   // a verdict for the previous page must not keep blocking this one
   chrome.tabs.sendMessage(tabId, { type: 'pageChanged' }).catch(() => {});
 }
@@ -746,9 +794,13 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(handleSpaNavigation);
 chrome.webNavigation.onReferenceFragmentUpdated.addListener(handleSpaNavigation);
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  tickQuota(); // switching away closes the old slice before it can grow
   const tracking = await getTracking();
   if (tracking[tabId]?.checkDue) checkTab(tabId);
 });
+
+// the browser going behind another app stops the clock, same as switching tabs does
+chrome.windows.onFocusChanged.addListener(() => tickQuota());
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.alarms.clear(`check_${tabId}`);
@@ -770,6 +822,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === 'watchdog') {
     watchdog();
+    tickQuota(); // the floor under the clock: it still runs with every page on the site dead
     return;
   }
   const match = alarm.name.match(/^check_(\d+)$/);
@@ -781,8 +834,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'rearmAll') rearmAll();
   if (message.type === 'startUnblock') startUnblock(message.tabId); // from the popup
   if (message.type === 'unblockConfirmed' && sender.tab) unblockTab(sender.tab.id); // from the card
-  if (message.type === 'quotaSync' && sender.tab) {
-    quotaSync(sender.tab, !!message.running).then(sendResponse);
+  if (message.type === 'quotaSync' && sender.tab?.url) {
+    quotaStateFor(sender.tab.url).then(sendResponse); // the tab's url, not the page's claim
     return true; // answered asynchronously
   }
 });

@@ -184,17 +184,23 @@ Reply with exactly one word: ALLOW or BLOCK.`;
    A second, cheaper policy than asking a model: sites you already know eat your day
    get a budget instead of a verdict. Spend it and the site shuts for a while.      */
 
-const DEFAULT_TIMED_HOSTS = [
+// The built-in list is the point of the feature, so it cannot be edited away. Anything
+// the user adds rides alongside it and can be taken off again.
+const BUILT_IN_TIMED_HOSTS = [
   'instagram.com', 'facebook.com', 'snapchat.com', 'tiktok.com',
   'x.com', 'twitter.com', 'reddit.com', 'youtube.com',
-].join('\n');
+];
 const DEFAULT_QUOTA_MINUTES = 5;
 const DEFAULT_COOLDOWN_MINUTES = 60;
 
-// A slice longer than a few poll intervals means nobody was watching - a closed laptop,
-// a minimised window, a throttled tab. The budget only ever moves in poll-sized steps,
-// so time the browser never reported back is time you are not charged for.
-const MAX_SLICE_MS = 15000;
+const timedHostList = (extraRaw) => [...new Set([...BUILT_IN_TIMED_HOSTS, ...parseSkipHosts(extraRaw)])];
+const extraTimedHosts = (extraRaw) =>
+  parseSkipHosts(extraRaw).filter((h) => !BUILT_IN_TIMED_HOSTS.includes(h));
+
+// A slice longer than one tick of the slowest thing driving the clock means nobody was
+// watching - a closed laptop, a minimised window, a worker that was asleep. The budget
+// only ever moves a tick at a time, so hours nobody reported are not charged for.
+const MAX_SLICE_MS = 65000; // the minute watchdog is the slowest driver
 
 // the list entry this host belongs to, so m.youtube.com and www.youtube.com spend one budget
 const timedHostFor = (host, hosts) => hosts.find((h) => host === h || host.endsWith('.' + h)) || null;

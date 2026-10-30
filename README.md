@@ -105,7 +105,11 @@ Three providers, one key, your choice: **Ollama Cloud**, **Google Gemini** or **
 
 Some sites you don't need a model's opinion on. You already know Instagram is Instagram. **Time-limit social sites** gives them a budget instead: a countdown appears in the corner of the page, and when it runs out the site shuts for an hour. Five minutes an hour, by default — change either number.
 
-The budget belongs to the site, not the tab, so three Instagram tabs share one five minutes. The clock only runs while you're actually looking: switch tabs, switch windows, or minimise, and it stops. Instagram, Facebook, Snapchat, TikTok, X, Reddit and YouTube are on the list to start with; edit it freely. A site on this list is never sent to the model at all — the clock is the whole policy — so if you want YouTube judged video by video instead, take it off the list.
+Instagram, Facebook, Snapchat, TikTok, X, Twitter, Reddit and YouTube are built in and stay on the list, because they are what the feature is for. Add any site you like beside them — `pinterest.com`, `netflix.com`, whatever eats your day — and take your own additions off again whenever you want.
+
+The budget belongs to the site, not the tab, so three Instagram tabs share one five minutes. The clock runs only while that site is the tab you are looking at, in a window that actually has focus: switch tabs, switch windows, or minimise, and it stops. Chrome is what gets asked, not the page, so a site cannot run free by refusing to load the extension's script.
+
+A site on this list is never sent to the model at all — the clock is the whole policy — so if you want YouTube judged video by video instead, switch the whole feature off or let the model have it back.
 
 ### Models — route every check through any model you like
 

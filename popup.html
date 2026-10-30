@@ -214,12 +214,17 @@
 
     <div class="field">
       <div class="field-head">
-        <label for="timedHosts">Timed sites</label>
+        <span class="field-title">Sites on the clock</span>
         <span class="counter" id="timedCount">0 sites</span>
       </div>
-      <textarea id="timedHosts" class="ta-sm" spellcheck="false" autocomplete="off"
-                placeholder="instagram.com&#10;tiktok.com&#10;youtube.com"></textarea>
-      <p class="help">One host per line, subdomains covered. Every tab on a site shares its one budget.</p>
+      <ul class="hostlist" id="timedChips" aria-label="Sites on the clock"></ul>
+      <div class="add-row">
+        <input type="text" id="newTimedHost" placeholder="pinterest.com" autocomplete="off"
+               spellcheck="false" aria-label="Add a site to the clock">
+        <button type="button" class="btn btn-ghost btn-sm" id="addTimedHost">Add</button>
+      </div>
+      <p class="help">Subdomains are covered, and every tab on a site shares its one budget. The
+        built-in eight stay on the list; anything you add can be taken off again.</p>
     </div>
     </div>
 

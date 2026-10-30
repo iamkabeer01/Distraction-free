@@ -164,7 +164,9 @@
     timeup: {
       accent: '#f5f5f2',
       title: 'Your time here is up.',
-      body: '', // replaced with the live countdown on every poll
+      // the background can push this card before this page has polled once, so it has to
+      // read sensibly with no countdown in it yet. The poll fills the exact time in.
+      body: 'This site is shut until your next window opens.',
       buttons: [['close', 'Close this tab', true]],
     },
     warning: {
@@ -262,17 +264,14 @@
     document.getElementById(OVERLAY_ID)?.remove();
   }
 
-  /* ── timed sites ────────────────────────────────────────────
-     The background owns the budget; this reports whether the page is really being
-     looked at and draws what it is told. Polling rather than a clock of its own,
-     because every tab open on the site is spending the same five minutes.       */
+  /* ── timed sites ──────────────────────────────────────────────
+     The background runs the clock and can shut the site without any help from here;
+     this only draws it, and asks often enough that the last seconds of the budget
+     are accurate. Nothing here is load-bearing, so a dropped message costs a tick,
+     never the whole timer.                                                        */
   const PILL_ID = '__df_quota_pill__';
-  const QUOTA_POLL_MS = 5000; // MAX_SLICE_MS in shared.js is the ceiling on one of these
+  const QUOTA_POLL_MS = 5000;
   let quotaPoll = null;
-  let quotaOff = false; // most pages are not timed, and must not keep asking on every tab switch
-
-  // a tab behind another window or another tab is not spending your attention
-  const watching = () => document.visibilityState === 'visible' && document.hasFocus();
 
   function ask(message) {
     return new Promise((resolve) => {
@@ -311,12 +310,11 @@
   const removePill = () => document.getElementById(PILL_ID)?.remove();
 
   async function syncQuota() {
-    if (quotaOff) return;
-    const state = await ask({ type: 'quotaSync', running: watching() });
-    if (!state?.timed) {
-      clearInterval(quotaPoll); // not on the list, or no longer on it: stop asking
+    const state = await ask({ type: 'quotaSync' });
+    if (!state) return; // worker asleep or restarting - ask again next tick, do not give up
+    if (!state.timed) {
+      clearInterval(quotaPoll); // this site is not on the list: stop asking about it
       quotaPoll = null;
-      quotaOff = true;
       removePill();
       if (shownState === 'timeup') removeOverlay();
       return;
@@ -338,8 +336,7 @@
 
   syncQuota();
   quotaPoll = setInterval(syncQuota, QUOTA_POLL_MS);
-  // a tab switch or an alt-tab has to stop the clock now, not at the next poll
-  for (const event of ['visibilitychange', 'focus', 'blur']) addEventListener(event, syncQuota);
+  addEventListener('visibilitychange', syncQuota); // coming back to the tab repaints at once
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'extractContent') sendResponse(extractContent());
