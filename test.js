@@ -8,11 +8,13 @@ const {
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
+  quotaStep, timedHostFor, MAX_SLICE_MS, DEFAULT_TIMED_HOSTS,
 } = new Function(`${src}; return {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
+  quotaStep, timedHostFor, MAX_SLICE_MS, DEFAULT_TIMED_HOSTS,
 };`)();
 
 // a page must not be able to close the fence and have its own text read as instructions
@@ -213,9 +215,72 @@ for (const needle of [
   'passUntil((await getUnblocked())[unblockKey(url)]) > Date.now()',
   'passUntil(until) <= now',
   'passUntil(unblocked[unblockKey(entry.url)]) <= now',
+  // the clock cannot run without these: the ledger write, the poll answer, and the
+  // verdict that keeps a timed site away from the model
+  'function updateTimed(',
+  'async function quotaSync(',
+  "return 'TIMED'",
+  'return true; // answered asynchronously',
 ]) {
   assert.ok(backgroundJs.includes(needle), `background.js has lost: ${needle}`);
 }
+
+/* ── the timed-site ledger ────────────────────────────────────────
+   An hour of browsing, run a slice at a time with no browser in sight.          */
+const QUOTA = 5 * 60000;
+const COOL = 60 * 60000;
+
+// the budget belongs to the site, so every surface of it spends the same minutes
+const timedHosts = parseSkipHosts(DEFAULT_TIMED_HOSTS);
+assert.strictEqual(timedHostFor('www.instagram.com', timedHosts), 'instagram.com');
+assert.strictEqual(timedHostFor('m.youtube.com', timedHosts), 'youtube.com');
+assert.strictEqual(timedHostFor('github.com', timedHosts), null);
+// and a lookalike host must not borrow it
+assert.strictEqual(timedHostFor('notinstagram.com', timedHosts), null);
+
+// watch it for five minutes, ten seconds at a time, and it shuts on the last one
+let t = 1_000_000;
+let entry = { usedMs: 0, blockedUntil: 0, since: t };
+let step;
+for (let i = 0; i < 30; i++) {
+  t += 10000;
+  entry = { ...entry, since: entry.since || t };
+  step = quotaStep(entry, t, QUOTA, COOL);
+  entry = step.entry;
+}
+assert.ok(step.blocked, 'five minutes of slices must spend the budget');
+assert.strictEqual(step.unblockInMs, COOL);
+assert.strictEqual(entry.since, 0, 'a blocked site is not still running a slice');
+
+// it stays shut for the whole cooldown, and a tab sitting on it does not serve it faster
+for (const elapsed of [60000, COOL - 1000]) {
+  const at = t + elapsed;
+  const held = quotaStep({ ...entry, since: at }, at, QUOTA, COOL);
+  assert.ok(held.blocked, `still shut ${elapsed}ms in`);
+  assert.strictEqual(held.entry.usedMs, QUOTA, 'time spent behind the wall is not time spent on the site');
+}
+
+// the moment the cooldown is served the budget is whole again
+const fresh = quotaStep(entry, t + COOL, QUOTA, COOL);
+assert.ok(!fresh.blocked);
+assert.strictEqual(fresh.remainingMs, QUOTA);
+
+// A window left open for an hour must not swallow the budget in one step: nothing was
+// reported, so nothing was watched. This is the whole defence against a sleeping laptop.
+const away = quotaStep({ usedMs: 0, blockedUntil: 0, since: t }, t + COOL, QUOTA, COOL);
+assert.strictEqual(away.entry.usedMs, MAX_SLICE_MS);
+assert.ok(!away.blocked);
+
+// junk in storage reads as an empty budget, never as a pass or a block that never lifts
+for (const junk of [undefined, {}, { usedMs: 'lots', blockedUntil: 'never', since: {} }]) {
+  const safe = quotaStep(junk, t, QUOTA, COOL);
+  assert.ok(!safe.blocked);
+  assert.strictEqual(safe.remainingMs, QUOTA);
+}
+
+// a site nobody is looking at keeps what is left of its budget
+const parked = quotaStep({ usedMs: 60000, blockedUntil: 0, since: 0 }, t + COOL, QUOTA, COOL);
+assert.strictEqual(parked.remainingMs, QUOTA - 60000);
 
 const popupJs = readFileSync(`${__dirname}/popup.js`, 'utf8');
 const popupHtml = readFileSync(`${__dirname}/popup.html`, 'utf8');
@@ -229,8 +294,22 @@ for (const needle of [
   'function emptyState(',
   'chrome.storage.onChanged.addListener',
   'setInterval(paint',
+  'function renderTimedCount(',
+  'function saveTimed(',
 ]) {
   assert.ok(popupJs.includes(needle), `popup.js has lost: ${needle}`);
+}
+
+const contentJs = readFileSync(`${__dirname}/content.js`, 'utf8');
+
+// the page-side half: the poll, the answer it reacts to, and the wall it draws
+for (const needle of [
+  'async function syncQuota(',
+  "type: 'quotaSync'",
+  "showOverlay('timeup')",
+  'document.hasFocus()',
+]) {
+  assert.ok(contentJs.includes(needle), `content.js has lost: ${needle}`);
 }
 
 // every element the popup reaches for has to exist in the markup it runs against

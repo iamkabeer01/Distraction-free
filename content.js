@@ -5,6 +5,7 @@
   const OVERLAY_ID = '__df_block_overlay__';
   const CARD_ID = '__df_block_card__';
   let repauseTimer = null;
+  let shownState = null;
 
   function send(message) {
     try {
@@ -160,6 +161,12 @@
       body: 'Reading what is actually on this page before deciding whether to let you through.',
       buttons: [],
     },
+    timeup: {
+      accent: '#f5f5f2',
+      title: 'Your time here is up.',
+      body: '', // replaced with the live countdown on every poll
+      buttons: [['close', 'Close this tab', true]],
+    },
     warning: {
       accent: '#f07070',
       title: 'This is entertainment.',
@@ -182,6 +189,7 @@
     const state = STATES[name] || STATES.blocked;
     const card = document.getElementById(CARD_ID);
     if (!card) return;
+    shownState = name;
     card.innerHTML = `
       <svg width="46" height="46" viewBox="0 0 128 128" aria-hidden="true" style="all:initial;display:block;">
         <defs><linearGradient id="__dfg" x1="0" y1="0" x2="0.35" y2="1">
@@ -244,14 +252,94 @@
       repauseTimer = setInterval(pauseMedia, 1000); // players and ad breaks restart themselves
     }
     pauseMedia();
-    renderCard(state);
+    if (shownState !== state) renderCard(state); // rebuilding it every poll would steal focus back
   }
 
   function removeOverlay() {
     clearInterval(repauseTimer);
     repauseTimer = null;
+    shownState = null;
     document.getElementById(OVERLAY_ID)?.remove();
   }
+
+  /* ── timed sites ────────────────────────────────────────────
+     The background owns the budget; this reports whether the page is really being
+     looked at and draws what it is told. Polling rather than a clock of its own,
+     because every tab open on the site is spending the same five minutes.       */
+  const PILL_ID = '__df_quota_pill__';
+  const QUOTA_POLL_MS = 5000; // MAX_SLICE_MS in shared.js is the ceiling on one of these
+  let quotaPoll = null;
+  let quotaOff = false; // most pages are not timed, and must not keep asking on every tab switch
+
+  // a tab behind another window or another tab is not spending your attention
+  const watching = () => document.visibilityState === 'visible' && document.hasFocus();
+
+  function ask(message) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, (r) => resolve(chrome.runtime.lastError ? null : r));
+      } catch {
+        resolve(null); // extension reloaded out from under this script
+      }
+    });
+  }
+
+  function clock(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    const mins = Math.floor(total / 60);
+    if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    return `${mins}:${String(total % 60).padStart(2, '0')}`;
+  }
+
+  function showPill(text, urgent) {
+    let el = document.getElementById(PILL_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = PILL_ID;
+      el.style.cssText =
+        'all:initial;position:fixed;top:14px;right:14px;z-index:2147483646;pointer-events:none;' +
+        'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:13px;font-weight:600;' +
+        'padding:7px 13px;border-radius:999px;background:rgba(16,18,22,.88);' +
+        'border:1px solid rgba(255,255,255,.14);box-shadow:0 6px 22px rgba(0,0,0,.4);' +
+        'font-variant-numeric:tabular-nums;letter-spacing:.02em;';
+      document.documentElement.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.color = urgent ? '#f07070' : '#f5f5f2';
+  }
+
+  const removePill = () => document.getElementById(PILL_ID)?.remove();
+
+  async function syncQuota() {
+    if (quotaOff) return;
+    const state = await ask({ type: 'quotaSync', running: watching() });
+    if (!state?.timed) {
+      clearInterval(quotaPoll); // not on the list, or no longer on it: stop asking
+      quotaPoll = null;
+      quotaOff = true;
+      removePill();
+      if (shownState === 'timeup') removeOverlay();
+      return;
+    }
+    if (state.blocked) {
+      removePill();
+      showOverlay('timeup');
+      const card = document.getElementById(CARD_ID);
+      if (card) {
+        card.children[3].textContent =
+          `${state.site} opens again in ${clock(state.unblockInMs)}. ` +
+          `Your ${Math.round(state.quotaMs / 60000)} minutes here are spent.`;
+      }
+      return;
+    }
+    if (shownState === 'timeup') removeOverlay(); // the cooldown ran out while this page sat here
+    showPill(`${clock(state.remainingMs)} left`, state.remainingMs <= 60000);
+  }
+
+  syncQuota();
+  quotaPoll = setInterval(syncQuota, QUOTA_POLL_MS);
+  // a tab switch or an alt-tab has to stop the clock now, not at the next poll
+  for (const event of ['visibilitychange', 'focus', 'blur']) addEventListener(event, syncQuota);
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'extractContent') sendResponse(extractContent());
@@ -260,6 +348,9 @@
       sendResponse(true); // the sender retries a silent tab, so it has to hear back
     }
     // background saw an SPA navigation: a verdict for the previous page must not block this one
-    if (message.type === 'pageChanged') removeOverlay();
+    if (message.type === 'pageChanged') {
+      removeOverlay();
+      if (quotaPoll) syncQuota(); // or clicking around an SPA would buy five free seconds a click
+    }
   });
 })();

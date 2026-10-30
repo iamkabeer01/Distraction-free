@@ -101,6 +101,12 @@ Three providers, one key, your choice: **Ollama Cloud**, **Google Gemini** or **
 
 **Never check these sites** is your privacy line. Anything listed here is never read, never sent, never judged. Your bank, your email, your company's internal tools. Subdomains are covered, so `bank.com` covers `login.bank.com`. These tabs show up as `PRIVATE` in the list, and that's all the extension will ever know about them.
 
+### Timed sites — a stopwatch instead of an argument
+
+Some sites you don't need a model's opinion on. You already know Instagram is Instagram. **Time-limit social sites** gives them a budget instead: a countdown appears in the corner of the page, and when it runs out the site shuts for an hour. Five minutes an hour, by default — change either number.
+
+The budget belongs to the site, not the tab, so three Instagram tabs share one five minutes. The clock only runs while you're actually looking: switch tabs, switch windows, or minimise, and it stops. Instagram, Facebook, Snapchat, TikTok, X, Reddit and YouTube are on the list to start with; edit it freely. A site on this list is never sent to the model at all — the clock is the whole policy — so if you want YouTube judged video by video instead, take it off the list.
+
 ### Models — route every check through any model you like
 
 ![The OpenRouter model picker](docs/openrouter.png)

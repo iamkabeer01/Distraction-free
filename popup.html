@@ -185,6 +185,44 @@
 
     </div>
 
+    <div class="card">
+    <div class="field field-row">
+      <div class="field-text">
+        <label for="timedEnabled">Time-limit social sites</label>
+        <p class="help">The sites below get a stopwatch instead of a verdict: a few minutes, then shut for a while. The model is never asked about them.</p>
+      </div>
+      <input type="checkbox" role="switch" id="timedEnabled" class="switch" checked>
+    </div>
+
+    <div class="field field-row">
+      <label class="stepper-label" for="quotaMinutes">You get</label>
+      <div class="stepper">
+        <input type="number" id="quotaMinutes" min="1" max="240" step="1" inputmode="numeric"
+               aria-label="Minutes allowed on a timed site">
+        <span class="stepper-unit">min</span>
+      </div>
+    </div>
+
+    <div class="field field-row">
+      <label class="stepper-label" for="cooldownMinutes">Then shut for</label>
+      <div class="stepper">
+        <input type="number" id="cooldownMinutes" min="1" max="1440" step="1" inputmode="numeric"
+               aria-label="Minutes a timed site stays shut once its budget is spent">
+        <span class="stepper-unit">min</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="field-head">
+        <label for="timedHosts">Timed sites</label>
+        <span class="counter" id="timedCount">0 sites</span>
+      </div>
+      <textarea id="timedHosts" class="ta-sm" spellcheck="false" autocomplete="off"
+                placeholder="instagram.com&#10;tiktok.com&#10;youtube.com"></textarea>
+      <p class="help">One host per line, subdomains covered. Every tab on a site shares its one budget.</p>
+    </div>
+    </div>
+
     <div class="field">
       <div class="field-head">
         <label for="skipHosts">Never check these sites</label>

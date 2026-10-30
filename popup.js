@@ -101,7 +101,8 @@ $$('.chip').forEach((chip) =>
 );
 
 function bucketOf(entry) {
-  if (entry.verdict === 'SKIP' || entry.verdict === 'UNSUPPORTED') return 'SKIP';
+  // never judged by the model, so it is not a share of what the model decided
+  if (entry.verdict === 'SKIP' || entry.verdict === 'UNSUPPORTED' || entry.verdict === 'TIMED') return 'SKIP';
   if (entry.verdict === 'ALLOW' || entry.verdict === 'UNBLOCK') return 'ALLOW';
   if (entry.verdict === 'BLOCK') return 'BLOCK';
   if (entry.verdict === 'ERROR') return 'ERROR';
@@ -130,6 +131,11 @@ function statusOf(entry, remaining) {
     return {
       cls: 'pill-pending', glyph: 'good', text: 'UNBLOCKED',
       title: 'You unblocked this page. It is left alone for an hour, then judged again.',
+    };
+  if (entry.verdict === 'TIMED')
+    return {
+      cls: 'pill-pending', glyph: 'clock', text: 'TIMED',
+      title: 'On a stopwatch instead of a verdict. The countdown is on the page itself.',
     };
   if (entry.verdict === 'ALLOW')
     return { cls: 'pill-good', glyph: 'good', text: 'FOCUSED', title: checkedWith };
@@ -615,10 +621,51 @@ function renderSkipCount() {
 
 skipInput.addEventListener('input', renderSkipCount);
 
+/* ── timed sites ────────────────────────────────────────────────
+   Saved as they change rather than behind Save settings, which exists to test an API
+   key - none of this touches a provider. rearmAll re-judges the open tabs, so a site
+   added to the list stops being asked about from the moment it is typed.          */
+const timedToggle = $('timedEnabled');
+const timedInput = $('timedHosts');
+const quotaInput = $('quotaMinutes');
+const cooldownInput = $('cooldownMinutes');
+
+function renderTimedCount() {
+  const n = parseSkipHosts(timedInput.value).length;
+  $('timedCount').textContent = `${n} site${n === 1 ? '' : 's'}`;
+}
+
+function saveTimed(settings, message) {
+  chrome.storage.local.set(settings, () => chrome.runtime.sendMessage({ type: 'rearmAll' }));
+  if (message) say(status, message, '');
+}
+
+timedToggle.addEventListener('change', () =>
+  saveTimed(
+    { timedEnabled: timedToggle.checked },
+    timedToggle.checked ? 'Timed sites are on.' : 'Timed sites are off. The model judges them again.'
+  )
+);
+
+timedInput.addEventListener('input', renderTimedCount);
+timedInput.addEventListener('change', () => saveTimed({ timedHosts: timedInput.value.trim() }, 'Timed sites saved.'));
+
+for (const [input, key, fallback] of [
+  [quotaInput, 'quotaMinutes', DEFAULT_QUOTA_MINUTES],
+  [cooldownInput, 'cooldownMinutes', DEFAULT_COOLDOWN_MINUTES],
+]) {
+  input.addEventListener('change', () => {
+    const minutes = Math.min(Number(input.max), Math.max(1, Math.round(Number(input.value)) || fallback));
+    input.value = minutes; // a typed 0 or a blank field snaps back to something workable
+    saveTimed({ [key]: minutes }, `${minutes} min saved.`);
+  });
+}
+
 chrome.storage.local.get(
   [
     'provider', 'geminiApiKey', 'geminiModel', 'openrouterApiKey', 'openrouterModels',
     'ollamaApiKey', 'ollamaModels', 'checkMinutes', 'systemPrompt', 'skipHosts', 'unblockEnabled',
+    'timedEnabled', 'timedHosts', 'quotaMinutes', 'cooldownMinutes',
   ],
   (stored) => {
     showProvider(stored.provider);
@@ -634,9 +681,16 @@ chrome.storage.local.get(
     quickMinutes.value = savedMinutes;
     promptInput.value = stored.systemPrompt || '';
     skipInput.value = stored.skipHosts || '';
+    timedToggle.checked = stored.timedEnabled !== false;
+    // ?? not ||: an emptied list is the user switching every site off, not a missing setting
+    timedInput.value = stored.timedHosts ?? DEFAULT_TIMED_HOSTS;
+    quotaInput.value = Number(stored.quotaMinutes) > 0 ? stored.quotaMinutes : DEFAULT_QUOTA_MINUTES;
+    cooldownInput.value =
+      Number(stored.cooldownMinutes) > 0 ? stored.cooldownMinutes : DEFAULT_COOLDOWN_MINUTES;
     renderPromptPreview();
     renderPromptCount();
     renderSkipCount();
+    renderTimedCount();
   }
 );
 

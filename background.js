@@ -1,6 +1,7 @@
 importScripts('shared.js');
 // shared.js: DEFAULT_SYSTEM_PROMPT, DEFAULT_MODEL, DEFAULT_CHECK_MINUTES, MAX_ATTEMPTS,
-//            TRANSIENT_STATUS, geminiEndpoint, fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped
+//            TRANSIENT_STATUS, geminiEndpoint, fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped,
+//            quotaStep, timedHostFor, DEFAULT_TIMED_HOSTS, DEFAULT_QUOTA_MINUTES, DEFAULT_COOLDOWN_MINUTES
 
 const RETRY_BACKOFF_MINUTES = [1, 2, 4, 8, 16]; // chrome.alarms will not fire faster than 1 minute
 const STALE_CHECK_MS = 90 * 1000; // a check still flagged running after this was killed with the service worker
@@ -116,10 +117,82 @@ async function expireUnblock(tabId) {
   checkTab(tabId);
 }
 
+/* ── timed sites ─────────────────────────────────────────────
+   The budget belongs to the site, not the tab: three Instagram tabs share one five
+   minutes. Content scripts report whether their page is actually being watched and
+   this keeps the ledger - nothing accrues while nobody is reporting.             */
+const TIMED_KEY = 'timedUsage';
+
+const positiveMinutes = (value, fallback) => (Number(value) > 0 ? Number(value) : fallback);
+
+async function timedSettings() {
+  const s = await chrome.storage.local.get(['timedEnabled', 'timedHosts', 'quotaMinutes', 'cooldownMinutes']);
+  return {
+    enabled: s.timedEnabled !== false,
+    // ?? not ||: an empty list is the user switching every site off, not a missing setting
+    hosts: parseSkipHosts(s.timedHosts ?? DEFAULT_TIMED_HOSTS),
+    quotaMs: positiveMinutes(s.quotaMinutes, DEFAULT_QUOTA_MINUTES) * 60000,
+    cooldownMs: positiveMinutes(s.cooldownMinutes, DEFAULT_COOLDOWN_MINUTES) * 60000,
+  };
+}
+
+// the site this url spends from, or null if it spends nothing
+function timedSiteFor(url, cfg) {
+  if (!cfg.enabled || !cfg.hosts.length) return null;
+  try {
+    return timedHostFor(new URL(url).hostname.toLowerCase(), cfg.hosts);
+  } catch {
+    return null;
+  }
+}
+
+// same chain as the tracking writes, so two tabs polling at once cannot both read the
+// old budget and write their own slice over the other's
+function updateTimed(mutate) {
+  writeChain = writeChain.then(async () => {
+    const stored = await chrome.storage.local.get(TIMED_KEY);
+    const all = stored[TIMED_KEY] || {};
+    try {
+      mutate(all);
+    } catch (e) {
+      console.error('[DF] quota update failed', e);
+    }
+    await chrome.storage.local.set({ [TIMED_KEY]: all });
+  });
+  return writeChain;
+}
+
+// -> what the page asking should be showing right now
+async function quotaSync(tab, running) {
+  const cfg = await timedSettings();
+  const site = timedSiteFor(tab.url, cfg);
+  if (!site) return { timed: false };
+
+  let out = { timed: false };
+  await updateTimed((all) => {
+    const now = Date.now();
+    const prev = { ...(all[site] || {}) };
+    if (running && !prev.since) prev.since = now; // the slice starts here
+    const step = quotaStep(prev, now, cfg.quotaMs, cfg.cooldownMs);
+    if (!running) step.entry.since = 0; // the slice ends here, its time already folded in
+    all[site] = step.entry;
+    out = {
+      timed: true,
+      site,
+      blocked: step.blocked,
+      remainingMs: step.remainingMs,
+      unblockInMs: step.unblockInMs,
+      quotaMs: cfg.quotaMs,
+    };
+  });
+  return out;
+}
+
 // every way a page is settled before the model is ever asked
 async function preVerdictFor(url) {
   if (isRestrictedUrl(url)) return 'UNSUPPORTED'; // Chrome will not let us read it
   if (await isSkipped(url)) return 'SKIP'; // the user asked us not to
+  if (timedSiteFor(url, await timedSettings())) return 'TIMED'; // the clock governs it, not the model
   if (await isUnblocked(url)) return 'UNBLOCK'; // the user already said yes to this page
   return null;
 }
@@ -708,4 +781,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'rearmAll') rearmAll();
   if (message.type === 'startUnblock') startUnblock(message.tabId); // from the popup
   if (message.type === 'unblockConfirmed' && sender.tab) unblockTab(sender.tab.id); // from the card
+  if (message.type === 'quotaSync' && sender.tab) {
+    quotaSync(sender.tab, !!message.running).then(sendResponse);
+    return true; // answered asynchronously
+  }
 });
