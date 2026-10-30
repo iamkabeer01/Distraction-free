@@ -696,25 +696,22 @@ timedToggle.addEventListener('change', () =>
   )
 );
 
-const MINUTE_FIELDS = [
-  [$('quotaMinutes'), 'quotaMinutes', DEFAULT_QUOTA_MINUTES, QUOTA_LIMIT_MINUTES],
-  [$('cooldownMinutes'), 'cooldownMinutes', DEFAULT_COOLDOWN_MINUTES, COOLDOWN_LIMIT_MINUTES],
-];
+// the budget is the only number here; the hour after it is fixed
+const quotaInput = $('quotaMinutes');
+const quotaMinutes = (value) => cappedMinutes(value, DEFAULT_QUOTA_MINUTES, QUOTA_LIMIT_MINUTES);
 
-for (const [input, key, fallback, limit] of MINUTE_FIELDS) {
-  input.addEventListener('change', () => {
-    // a typed 0, a blank field or a number over the cap all snap back to something allowed
-    const minutes = cappedMinutes(input.value, fallback, limit);
-    input.value = minutes;
-    saveTimed({ [key]: minutes }, `${minutes} min saved.`);
-  });
-}
+quotaInput.addEventListener('change', () => {
+  // a typed 0, a blank field or a number over the cap all snap back to something allowed
+  const minutes = quotaMinutes(quotaInput.value);
+  quotaInput.value = minutes;
+  saveTimed({ quotaMinutes: minutes }, `${minutes} min saved.`);
+});
 
 chrome.storage.local.get(
   [
     'provider', 'geminiApiKey', 'geminiModel', 'openrouterApiKey', 'openrouterModels',
     'ollamaApiKey', 'ollamaModels', 'checkMinutes', 'systemPrompt', 'skipHosts', 'unblockEnabled',
-    'timedEnabled', 'timedExtraHosts', 'quotaMinutes', 'cooldownMinutes',
+    'timedEnabled', 'timedExtraHosts', 'quotaMinutes',
   ],
   (stored) => {
     showProvider(stored.provider);
@@ -734,9 +731,7 @@ chrome.storage.local.get(
     extraHosts = extraTimedHosts(stored.timedExtraHosts);
     // through the same cap the worker reads with, so a value saved before the cap
     // existed shows as what it will actually behave as
-    for (const [input, key, fallback, limit] of MINUTE_FIELDS) {
-      input.value = cappedMinutes(stored[key], fallback, limit);
-    }
+    quotaInput.value = quotaMinutes(stored.quotaMinutes);
     renderPromptPreview();
     renderPromptCount();
     renderSkipCount();

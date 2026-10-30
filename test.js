@@ -11,16 +11,14 @@ const {
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
   quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
-  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_LIMIT_MINUTES, DEFAULT_QUOTA_MINUTES,
-  DEFAULT_COOLDOWN_MINUTES,
+  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_MINUTES, DEFAULT_QUOTA_MINUTES,
 } = new Function(`${src}; return {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
   quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
-  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_LIMIT_MINUTES, DEFAULT_QUOTA_MINUTES,
-  DEFAULT_COOLDOWN_MINUTES,
+  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_MINUTES, DEFAULT_QUOTA_MINUTES,
 };`)();
 
 // a page must not be able to close the fence and have its own text read as instructions
@@ -251,7 +249,7 @@ assert.strictEqual(timedHostFor('notinstagram.com', timedHosts), null);
 // the defaults the user starts on, and the ceilings they cannot raise past
 assert.strictEqual(DEFAULT_QUOTA_MINUTES, 5);
 assert.strictEqual(QUOTA_LIMIT_MINUTES, 10);
-assert.strictEqual(COOLDOWN_LIMIT_MINUTES, 60);
+assert.strictEqual(COOLDOWN_MINUTES, 60);
 assert.strictEqual(cappedMinutes(5, 5, 10), 5); // what you asked for, inside the cap
 assert.strictEqual(cappedMinutes(240, 5, 10), 10); // over it: capped, not reset to the default
 assert.strictEqual(cappedMinutes(0, 5, 10), 5); // a blank or zero field falls back
@@ -454,13 +452,35 @@ function worker() {
 // into storage by hand, still has to shut the site at ten minutes.
 {
   const w = worker();
-  w.seed({ quotaMinutes: 600, cooldownMinutes: 1440 });
+  w.seed({ quotaMinutes: 600 });
   for (let m = 0; m < 20 && !w.shut(); m++) {
     await w.tick();
     w.wait(60000);
   }
   assert.ok(w.shut(), 'an over-limit quota in storage must still shut the site');
   assert.strictEqual(w.spent(), QUOTA_LIMIT_MINUTES * 60, 'capped at the limit, not at what was saved');
+}
+
+// The hour is fixed. Nothing reads it from storage, so a cooldownMinutes left over from
+// an older build - or poked in by hand at the moment it would be most tempting - changes
+// nothing about how long the site stays shut.
+{
+  const w = worker();
+  w.seed({ cooldownMinutes: 1 });
+  let state;
+  for (let i = 0; i < 80; i++) {
+    state = await w.poll();
+    if (state.blocked) break;
+    w.wait(5000);
+  }
+  assert.ok(state.blocked);
+  assert.strictEqual(state.unblockInMs, COOLDOWN_MINUTES * 60000, 'the hour cannot be shortened');
+
+  // and it really does stay shut for the whole hour, not just claim to
+  w.wait(59 * 60000);
+  assert.ok((await w.poll()).blocked, 'still shut at fifty-nine minutes');
+  w.wait(2 * 60000);
+  assert.ok(!(await w.poll()).blocked, 'open again past the hour');
 }
 
 // and once the cooldown is served the whole budget is there again
@@ -515,11 +535,16 @@ assert.ok(
 );
 
 // the native spinner must not offer a number the worker will refuse
-for (const [id, limit] of [['quotaMinutes', QUOTA_LIMIT_MINUTES], ['cooldownMinutes', COOLDOWN_LIMIT_MINUTES]]) {
-  const field = popupHtml.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] || '';
-  assert.ok(field.includes(`max="${limit}"`), `#${id} must carry max="${limit}" in the markup`);
-  assert.ok(field.includes('min="1"'), `#${id} must carry min="1" in the markup`);
-}
+const quotaField = popupHtml.match(/<input[^>]*id="quotaMinutes"[^>]*>/)?.[0] || '';
+assert.ok(quotaField.includes(`max="${QUOTA_LIMIT_MINUTES}"`), 'the spinner must not offer more than the cap');
+assert.ok(quotaField.includes('min="1"'));
+// the hour is not a setting, so there must be nothing anywhere offering to change it
+assert.ok(!popupHtml.includes('cooldownMinutes'), 'the popup must not offer a cooldown field');
+assert.ok(!popupJs.includes('cooldownMinutes'), 'the popup must not write a cooldown setting');
+assert.ok(
+  !backgroundJs.includes("'cooldownMinutes'"),
+  'the worker must not read a cooldown setting from storage'
+);
 
 // every element the popup reaches for has to exist in the markup it runs against
 const htmlIds = new Set([...popupHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));

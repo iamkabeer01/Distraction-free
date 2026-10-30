@@ -191,13 +191,15 @@ const BUILT_IN_TIMED_HOSTS = [
   'x.com', 'twitter.com', 'reddit.com', 'youtube.com',
 ];
 const DEFAULT_QUOTA_MINUTES = 5;
-const DEFAULT_COOLDOWN_MINUTES = 60;
 
-// The ceiling is the point of the feature: a budget you can raise as far as you like
-// is not a budget. Enforced where the clock reads it, not only where it is typed, so
-// a value saved before the cap existed is capped too.
+// The ceiling is the point of the feature: a budget you can raise as far as you like is
+// not a budget. Enforced where the clock reads it, not only where it is typed, so a
+// value saved before the cap existed is capped too.
 const QUOTA_LIMIT_MINUTES = 10;
-const COOLDOWN_LIMIT_MINUTES = 60;
+
+// The hour is not a setting. It is the part you would shorten at exactly the moment you
+// should not, so there is nothing to read from storage and nothing to type it into.
+const COOLDOWN_MINUTES = 60;
 
 // clampMinutes is already taken in popup.js, and a second top-level const of that name
 // would throw before a line of the popup ran

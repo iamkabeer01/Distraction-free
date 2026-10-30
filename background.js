@@ -2,7 +2,7 @@ importScripts('shared.js');
 // shared.js: DEFAULT_SYSTEM_PROMPT, DEFAULT_MODEL, DEFAULT_CHECK_MINUTES, MAX_ATTEMPTS,
 //            TRANSIENT_STATUS, geminiEndpoint, fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped,
 //            quotaStep, timedHostFor, timedHostList, cappedMinutes, DEFAULT_QUOTA_MINUTES,
-//            DEFAULT_COOLDOWN_MINUTES, QUOTA_LIMIT_MINUTES, COOLDOWN_LIMIT_MINUTES
+//            QUOTA_LIMIT_MINUTES, COOLDOWN_MINUTES
 
 const RETRY_BACKOFF_MINUTES = [1, 2, 4, 8, 16]; // chrome.alarms will not fire faster than 1 minute
 const STALE_CHECK_MS = 90 * 1000; // a check still flagged running after this was killed with the service worker
@@ -125,15 +125,12 @@ async function expireUnblock(tabId) {
 const TIMED_KEY = 'timedUsage';
 
 async function timedSettings() {
-  const s = await chrome.storage.local.get([
-    'timedEnabled', 'timedExtraHosts', 'quotaMinutes', 'cooldownMinutes',
-  ]);
+  const s = await chrome.storage.local.get(['timedEnabled', 'timedExtraHosts', 'quotaMinutes']);
   return {
     enabled: s.timedEnabled !== false,
     hosts: timedHostList(s.timedExtraHosts),
     quotaMs: cappedMinutes(s.quotaMinutes, DEFAULT_QUOTA_MINUTES, QUOTA_LIMIT_MINUTES) * 60000,
-    cooldownMs:
-      cappedMinutes(s.cooldownMinutes, DEFAULT_COOLDOWN_MINUTES, COOLDOWN_LIMIT_MINUTES) * 60000,
+    cooldownMs: COOLDOWN_MINUTES * 60000, // fixed, and deliberately not read from storage
   };
 }
 
