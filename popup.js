@@ -626,8 +626,6 @@ skipInput.addEventListener('input', renderSkipCount);
    key - none of this touches a provider. Only the user's own additions are stored; the
    built-in eight are the feature itself and are not editable away.                  */
 const timedToggle = $('timedEnabled');
-const quotaInput = $('quotaMinutes');
-const cooldownInput = $('cooldownMinutes');
 const newHostInput = $('newTimedHost');
 let extraHosts = [];
 
@@ -698,13 +696,16 @@ timedToggle.addEventListener('change', () =>
   )
 );
 
-for (const [input, key, fallback] of [
-  [quotaInput, 'quotaMinutes', DEFAULT_QUOTA_MINUTES],
-  [cooldownInput, 'cooldownMinutes', DEFAULT_COOLDOWN_MINUTES],
-]) {
+const MINUTE_FIELDS = [
+  [$('quotaMinutes'), 'quotaMinutes', DEFAULT_QUOTA_MINUTES, QUOTA_LIMIT_MINUTES],
+  [$('cooldownMinutes'), 'cooldownMinutes', DEFAULT_COOLDOWN_MINUTES, COOLDOWN_LIMIT_MINUTES],
+];
+
+for (const [input, key, fallback, limit] of MINUTE_FIELDS) {
   input.addEventListener('change', () => {
-    const minutes = Math.min(Number(input.max), Math.max(1, Math.round(Number(input.value)) || fallback));
-    input.value = minutes; // a typed 0 or a blank field snaps back to something workable
+    // a typed 0, a blank field or a number over the cap all snap back to something allowed
+    const minutes = cappedMinutes(input.value, fallback, limit);
+    input.value = minutes;
     saveTimed({ [key]: minutes }, `${minutes} min saved.`);
   });
 }
@@ -731,9 +732,11 @@ chrome.storage.local.get(
     skipInput.value = stored.skipHosts || '';
     timedToggle.checked = stored.timedEnabled !== false;
     extraHosts = extraTimedHosts(stored.timedExtraHosts);
-    quotaInput.value = Number(stored.quotaMinutes) > 0 ? stored.quotaMinutes : DEFAULT_QUOTA_MINUTES;
-    cooldownInput.value =
-      Number(stored.cooldownMinutes) > 0 ? stored.cooldownMinutes : DEFAULT_COOLDOWN_MINUTES;
+    // through the same cap the worker reads with, so a value saved before the cap
+    // existed shows as what it will actually behave as
+    for (const [input, key, fallback, limit] of MINUTE_FIELDS) {
+      input.value = cappedMinutes(stored[key], fallback, limit);
+    }
     renderPromptPreview();
     renderPromptCount();
     renderSkipCount();

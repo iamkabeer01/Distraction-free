@@ -195,18 +195,18 @@
     </div>
 
     <div class="field field-row">
-      <label class="stepper-label" for="quotaMinutes">You get</label>
+      <label class="stepper-label" for="quotaMinutes">You get <span class="cap">max 10</span></label>
       <div class="stepper">
-        <input type="number" id="quotaMinutes" min="1" max="240" step="1" inputmode="numeric"
+        <input type="number" id="quotaMinutes" min="1" max="10" step="1" inputmode="numeric"
                aria-label="Minutes allowed on a timed site">
         <span class="stepper-unit">min</span>
       </div>
     </div>
 
     <div class="field field-row">
-      <label class="stepper-label" for="cooldownMinutes">Then shut for</label>
+      <label class="stepper-label" for="cooldownMinutes">Then shut for <span class="cap">max 60</span></label>
       <div class="stepper">
-        <input type="number" id="cooldownMinutes" min="1" max="1440" step="1" inputmode="numeric"
+        <input type="number" id="cooldownMinutes" min="1" max="60" step="1" inputmode="numeric"
                aria-label="Minutes a timed site stays shut once its budget is spent">
         <span class="stepper-unit">min</span>
       </div>

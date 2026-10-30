@@ -103,7 +103,7 @@ Three providers, one key, your choice: **Ollama Cloud**, **Google Gemini** or **
 
 ### Timed sites — a stopwatch instead of an argument
 
-Some sites you don't need a model's opinion on. You already know Instagram is Instagram. **Time-limit social sites** gives them a budget instead: a countdown appears in the corner of the page, and when it runs out the site shuts for an hour. Five minutes an hour, by default — change either number.
+Some sites you don't need a model's opinion on. You already know Instagram is Instagram. **Time-limit social sites** gives them a budget instead: a countdown appears in the corner of the page, and when it runs out the site shuts for an hour. Five minutes an hour, by default. Both numbers are yours to set, within limits that are the point of the thing: the budget tops out at **10 minutes** and the shut-out at **1 hour**, so a weak moment in the settings screen cannot hand you an afternoon. The cap is enforced where the clock reads it, not just where you type it.
 
 Instagram, Facebook, Snapchat, TikTok, X, Twitter, Reddit and YouTube are built in and stay on the list, because they are what the feature is for. Add any site you like beside them — `pinterest.com`, `netflix.com`, whatever eats your day — and take your own additions off again whenever you want.
 

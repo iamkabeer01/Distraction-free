@@ -11,12 +11,16 @@ const {
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
   quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
+  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_LIMIT_MINUTES, DEFAULT_QUOTA_MINUTES,
+  DEFAULT_COOLDOWN_MINUTES,
 } = new Function(`${src}; return {
   fenceSafe, cacheKeyFor, parseSkipHosts, hostIsSkipped, geminiEndpoint, isRestrictedUrl,
   modelOrder, parseModelList, buildRequest, readVerdict, normalizeProvider,
   GEMINI_MODELS, DEFAULT_MODEL, DEFAULT_OPENROUTER_MODELS, OPENROUTER_MODELS,
   OLLAMA_MODELS, DEFAULT_OLLAMA_MODELS, PROVIDERS,
   quotaStep, timedHostFor, MAX_SLICE_MS, BUILT_IN_TIMED_HOSTS, timedHostList, extraTimedHosts,
+  cappedMinutes, QUOTA_LIMIT_MINUTES, COOLDOWN_LIMIT_MINUTES, DEFAULT_QUOTA_MINUTES,
+  DEFAULT_COOLDOWN_MINUTES,
 };`)();
 
 // a page must not be able to close the fence and have its own text read as instructions
@@ -244,6 +248,18 @@ assert.strictEqual(timedHostFor('github.com', timedHosts), null);
 // and a lookalike host must not borrow it
 assert.strictEqual(timedHostFor('notinstagram.com', timedHosts), null);
 
+// the defaults the user starts on, and the ceilings they cannot raise past
+assert.strictEqual(DEFAULT_QUOTA_MINUTES, 5);
+assert.strictEqual(QUOTA_LIMIT_MINUTES, 10);
+assert.strictEqual(COOLDOWN_LIMIT_MINUTES, 60);
+assert.strictEqual(cappedMinutes(5, 5, 10), 5); // what you asked for, inside the cap
+assert.strictEqual(cappedMinutes(240, 5, 10), 10); // over it: capped, not reset to the default
+assert.strictEqual(cappedMinutes(0, 5, 10), 5); // a blank or zero field falls back
+assert.strictEqual(cappedMinutes('', 5, 10), 5);
+assert.strictEqual(cappedMinutes('abc', 5, 10), 5);
+assert.strictEqual(cappedMinutes(-7, 5, 10), 1); // never zero: that would shut the site forever
+assert.strictEqual(cappedMinutes(2.6, 5, 10), 3);
+
 // what the user adds rides alongside the built-in eight; what they cannot do is drop one
 assert.ok(timedHostList('pinterest.com').includes('pinterest.com'));
 for (const built of BUILT_IN_TIMED_HOSTS) {
@@ -366,6 +382,7 @@ function worker() {
 
   return {
     world,
+    seed: (obj) => Object.assign(store, obj),
     wait: (ms) => (world.now += ms),
     tick: () => vm.runInContext('tickQuota()', box), // the watchdog's driver
     poll: () => new Promise((r) => onMessage({ type: 'quotaSync' }, { tab: { id: 7, url: world.activeUrl } }, r)),
@@ -432,6 +449,20 @@ function worker() {
   assert.ok(!w.shut());
 }
 
+// A budget you can raise as far as you like is not a budget, so the cap is enforced
+// where the clock READS it. A ten-hour quota saved before the cap existed, or poked
+// into storage by hand, still has to shut the site at ten minutes.
+{
+  const w = worker();
+  w.seed({ quotaMinutes: 600, cooldownMinutes: 1440 });
+  for (let m = 0; m < 20 && !w.shut(); m++) {
+    await w.tick();
+    w.wait(60000);
+  }
+  assert.ok(w.shut(), 'an over-limit quota in storage must still shut the site');
+  assert.strictEqual(w.spent(), QUOTA_LIMIT_MINUTES * 60, 'capped at the limit, not at what was saved');
+}
+
 // and once the cooldown is served the whole budget is there again
 {
   const w = worker();
@@ -482,6 +513,13 @@ assert.ok(
   contentJs.includes('if (!state) return; // worker asleep or restarting'),
   'content.js must retry an unanswered poll rather than stop polling'
 );
+
+// the native spinner must not offer a number the worker will refuse
+for (const [id, limit] of [['quotaMinutes', QUOTA_LIMIT_MINUTES], ['cooldownMinutes', COOLDOWN_LIMIT_MINUTES]]) {
+  const field = popupHtml.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] || '';
+  assert.ok(field.includes(`max="${limit}"`), `#${id} must carry max="${limit}" in the markup`);
+  assert.ok(field.includes('min="1"'), `#${id} must carry min="1" in the markup`);
+}
 
 // every element the popup reaches for has to exist in the markup it runs against
 const htmlIds = new Set([...popupHtml.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));

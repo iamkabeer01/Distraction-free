@@ -193,6 +193,17 @@ const BUILT_IN_TIMED_HOSTS = [
 const DEFAULT_QUOTA_MINUTES = 5;
 const DEFAULT_COOLDOWN_MINUTES = 60;
 
+// The ceiling is the point of the feature: a budget you can raise as far as you like
+// is not a budget. Enforced where the clock reads it, not only where it is typed, so
+// a value saved before the cap existed is capped too.
+const QUOTA_LIMIT_MINUTES = 10;
+const COOLDOWN_LIMIT_MINUTES = 60;
+
+// clampMinutes is already taken in popup.js, and a second top-level const of that name
+// would throw before a line of the popup ran
+const cappedMinutes = (value, fallback, limit) =>
+  Math.min(limit, Math.max(1, Math.round(Number(value)) || fallback));
+
 const timedHostList = (extraRaw) => [...new Set([...BUILT_IN_TIMED_HOSTS, ...parseSkipHosts(extraRaw)])];
 const extraTimedHosts = (extraRaw) =>
   parseSkipHosts(extraRaw).filter((h) => !BUILT_IN_TIMED_HOSTS.includes(h));
