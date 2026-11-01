@@ -189,6 +189,12 @@ async function tickQuota() {
     const now = Date.now();
     if (site && !all[site]) all[site] = { usedMs: 0, blockedUntil: 0, since: 0 };
     for (const [name, prev] of Object.entries(all)) {
+      // taken off the list: drop its ledger rather than leave an old block lying in wait
+      // for the day it is added back
+      if (!cfg.hosts.includes(name)) {
+        delete all[name];
+        continue;
+      }
       const wasShut = Number(prev?.blockedUntil) > now;
       // the looked-at site's slice is open, and starts now if it was not already running
       const entry = name === site ? { ...prev, since: prev.since || now } : prev;

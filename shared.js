@@ -186,9 +186,13 @@ Reply with exactly one word: ALLOW or BLOCK.`;
 
 // The built-in list is the point of the feature, so it cannot be edited away. Anything
 // the user adds rides alongside it and can be taken off again.
+// youtube.com is deliberately absent: half of it is a conference talk and the other
+// half is a rabbit hole, and a site on this list is never judged at all. It goes back
+// to the model, which reads the actual video. Add it here from the settings screen if
+// you would rather have the stopwatch.
 const BUILT_IN_TIMED_HOSTS = [
   'instagram.com', 'facebook.com', 'snapchat.com', 'tiktok.com',
-  'x.com', 'twitter.com', 'reddit.com', 'youtube.com',
+  'x.com', 'twitter.com', 'reddit.com',
 ];
 const DEFAULT_QUOTA_MINUTES = 5;
 
@@ -215,7 +219,7 @@ const extraTimedHosts = (extraRaw) =>
 // only ever moves a tick at a time, so hours nobody reported are not charged for.
 const MAX_SLICE_MS = 65000; // the minute watchdog is the slowest driver
 
-// the list entry this host belongs to, so m.youtube.com and www.youtube.com spend one budget
+// the list entry this host belongs to, so m.facebook.com and www.facebook.com spend one budget
 const timedHostFor = (host, hosts) => hosts.find((h) => host === h || host.endsWith('.' + h)) || null;
 
 // One pure step of the ledger, so a whole hour can be run through it without a browser:

@@ -105,11 +105,13 @@ Three providers, one key, your choice: **Ollama Cloud**, **Google Gemini** or **
 
 Some sites you don't need a model's opinion on. You already know Instagram is Instagram. **Time-limit social sites** gives them a budget instead: a countdown appears in the corner of the page, and when it runs out the site shuts for an hour. Five minutes an hour, by default. The budget is yours to set but tops out at **10 minutes**, and the hour it shuts for afterwards is fixed — there is no field for it, because the shut-out is the part you would talk yourself out of at exactly the wrong moment. Both are enforced where the clock reads them, not just where you type them.
 
-Instagram, Facebook, Snapchat, TikTok, X, Twitter, Reddit and YouTube are built in and stay on the list, because they are what the feature is for. Add any site you like beside them — `pinterest.com`, `netflix.com`, whatever eats your day — and take your own additions off again whenever you want.
+Instagram, Facebook, Snapchat, TikTok, X, Twitter and Reddit are built in and stay on the list, because they are what the feature is for. Add any site you like beside them — `pinterest.com`, `netflix.com`, whatever eats your day — and take your own additions off again whenever you want.
+
+YouTube is **not** built in, for the reason at the top of this page: half of it is a conference talk. It stays with the model, which reads the actual video and judges that. Add `youtube.com` yourself if you would rather have the stopwatch.
 
 The budget belongs to the site, not the tab, so three Instagram tabs share one five minutes. The clock runs only while that site is the tab you are looking at, in a window that actually has focus: switch tabs, switch windows, or minimise, and it stops. Chrome is what gets asked, not the page, so a site cannot run free by refusing to load the extension's script.
 
-A site on this list is never sent to the model at all — the clock is the whole policy — so if you want YouTube judged video by video instead, switch the whole feature off or let the model have it back.
+A site on this list is never sent to the model at all — the clock is the whole policy, and the page is never read. Take a site off the list and the model has it back.
 
 ### Models — route every check through any model you like
 

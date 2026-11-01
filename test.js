@@ -241,7 +241,12 @@ const COOL = 60 * 60000;
 // the budget belongs to the site, so every surface of it spends the same minutes
 const timedHosts = timedHostList('');
 assert.strictEqual(timedHostFor('www.instagram.com', timedHosts), 'instagram.com');
-assert.strictEqual(timedHostFor('m.youtube.com', timedHosts), 'youtube.com');
+assert.strictEqual(timedHostFor('m.facebook.com', timedHosts), 'facebook.com');
+// YouTube is deliberately not built in: it goes to the model, which reads the video
+assert.strictEqual(timedHostFor('www.youtube.com', timedHosts), null);
+assert.ok(!BUILT_IN_TIMED_HOSTS.includes('youtube.com'));
+// but it is a host like any other, so adding it yourself works
+assert.strictEqual(timedHostFor('www.youtube.com', timedHostList('youtube.com')), 'youtube.com');
 assert.strictEqual(timedHostFor('github.com', timedHosts), null);
 // and a lookalike host must not borrow it
 assert.strictEqual(timedHostFor('notinstagram.com', timedHosts), null);
@@ -481,6 +486,29 @@ function worker() {
   assert.ok((await w.poll()).blocked, 'still shut at fifty-nine minutes');
   w.wait(2 * 60000);
   assert.ok(!(await w.poll()).blocked, 'open again past the hour');
+}
+
+// A site taken off the list must not keep its block waiting for it. Without this, you
+// could drop a site while it was shut, add it back, and be shut out by an hour-old entry.
+{
+  const w = worker();
+  w.seed({ timedExtraHosts: 'youtube.com' });
+  w.world.activeUrl = 'https://www.youtube.com/';
+  for (let i = 0; i < 80; i++) {
+    if ((await w.poll()).blocked) break;
+    w.wait(5000);
+  }
+  assert.ok((await w.poll()).blocked, 'a site you added spends its budget like any other');
+
+  w.seed({ timedExtraHosts: '' }); // taken back off the list
+  await w.tick();
+  const after = await w.poll();
+  assert.ok(!after.timed, 'off the list, so no longer on the clock');
+
+  w.seed({ timedExtraHosts: 'youtube.com' }); // and added again
+  const again = await w.poll();
+  assert.ok(!again.blocked, 'a site added back starts fresh, not still shut');
+  assert.strictEqual(again.remainingMs, 5 * 60000);
 }
 
 // and once the cooldown is served the whole budget is there again
